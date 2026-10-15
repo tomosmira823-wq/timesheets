@@ -12,7 +12,7 @@ Env:   DATA_ROOT   where company data lives (default ./data)
        SECRET_KEY  signs session cookies (set a long random one in production)
        SECURE_COOKIES=1 behind HTTPS (Render/Fly/etc.)
 """
-import os, sys, json, hmac, hashlib, base64, time, re, secrets, shutil, threading, urllib.parse
+import io, os, sys, json, hmac, hashlib, base64, time, re, secrets, shutil, threading, urllib.parse
 import datetime as dt
 import types
 
@@ -436,6 +436,49 @@ async function importReceipts(){
 """
 
 
+INSTALL_JS = r"""<style>
+.inst{position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom));z-index:70;background:#15151c;color:#fff;border-radius:16px;padding:14px 14px 14px 16px;box-shadow:0 18px 50px rgba(0,0,0,.35);display:flex;gap:12px;align-items:center;animation:instUp .45s cubic-bezier(.22,1,.36,1) both;font-size:13.5px;line-height:1.4}
+@keyframes instUp{from{transform:translateY(130%);opacity:0}to{transform:none;opacity:1}}
+.inst img{width:44px;height:44px;border-radius:11px;flex:0 0 44px;background:#fff}
+.inst .t{flex:1;min-width:0}.inst b{display:block;font-size:14.5px;margin-bottom:2px}
+.inst .s{color:#aab1be;font-size:12.5px}
+.inst .go{background:var(--green,#6cc04a);color:#0e1a08;border:0;border-radius:10px;padding:10px 14px;font-weight:800;font-size:14px;cursor:pointer}
+.inst .x{background:none;border:0;color:#7d8494;font-size:20px;padding:0 4px;cursor:pointer;align-self:flex-start}
+.inst svg{vertical-align:-3px}
+</style><script>
+(function(){
+  var ua=navigator.userAgent||'';
+  var isIOS=/iPhone|iPad|iPod/.test(ua)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+  var isAndroid=/Android/.test(ua);
+  var installed=(window.matchMedia&&matchMedia('(display-mode: standalone)').matches)||navigator.standalone===true;
+  var deferred=null;
+  window.addEventListener('beforeinstallprompt',function(e){e.preventDefault();deferred=e;});
+  window.addEventListener('appinstalled',function(){var b=document.getElementById('inst');if(b)b.remove();});
+  if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(function(){});}
+  function dismissedRecently(){try{var t=+localStorage.getItem('ts_inst_x')||0;return Date.now()-t<3*864e5;}catch(e){return false;}}
+  window.maybeInstallBanner=function(){
+    if(installed||(!isIOS&&!isAndroid)||dismissedRecently()||document.getElementById('inst'))return;
+    try{if(localStorage.getItem('ts_client'))return;}catch(e){}
+    setTimeout(function(){
+      var b=document.createElement('div');b.className='inst';b.id='inst';
+      var share='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 8l5-5 5 5"/><path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/></svg>';
+      var body=isIOS
+        ? '<div class="t"><b>Add Timesheets to your Home Screen</b><span class="s">Tap '+share+' Share (under <b style="display:inline">⋯</b> in Safari), then <b style="display:inline">Add to Home Screen</b>. It opens like an app.</span></div>'
+        : '<div class="t"><b>Install the Timesheets app</b><span class="s">One tap — it goes on your home screen and opens full screen.</span></div><button class="go" id="instGo">Install</button>';
+      b.innerHTML='<img src="/icon.png" alt="">'+body+'<button class="x" aria-label="Not now" id="instX">×</button>';
+      document.body.appendChild(b);
+      document.getElementById('instX').onclick=function(){try{localStorage.setItem('ts_inst_x',Date.now());}catch(e){} b.remove();};
+      var go=document.getElementById('instGo');
+      if(go)go.onclick=async function(){
+        if(deferred){deferred.prompt();try{var r=await deferred.userChoice;if(r&&r.outcome==='accepted')b.remove();}catch(e){} deferred=null;}
+        else{b.querySelector('.s').innerHTML='Open the browser menu <b style="display:inline">⋮</b> and choose <b style="display:inline">Install app</b> or <b style="display:inline">Add to Home screen</b>.';go.remove();}
+      };
+    },1200);
+  };
+})();
+</script>"""
+
+
 def build_index_html():
     html = ts.INDEX_HTML.replace("{{LOGO}}", "").replace("{{LOGOCLS}}", "")
 
@@ -445,7 +488,7 @@ def build_index_html():
         html = html.replace(old, new)
 
     # bridge first
-    rep("<script>", BRIDGE_JS + "\n<script>")
+    rep("<script>", BRIDGE_JS + INSTALL_JS + "\n<script>")
     # setup card -> online sign-up card (no data-folder choice)
     rep('''<div class="brand">Welcome</div><div class="brand-sub">SET UP TIMESHEETS</div>''',
         '''<div class="brand">Create your company</div><div class="brand-sub">FREE TO START</div>''')
@@ -477,7 +520,7 @@ async function _desktopSetup(){''')
     # brand is per company: refresh it once signed in
     rep('''async function enterApp(u){
   USER=u;''', '''async function enterApp(u){
-  USER=u; await applyBrand();''')
+  USER=u; await applyBrand(); if(window.maybeInstallBanner) maybeInstallBanner();''')
     # settings: no data-folder card online
     rep('''  <div class="card" style="margin-top:16px"><div style="font-weight:700;margin-bottom:6px">Data</div>''',
         '''  <div class="card" style="margin-top:16px"><div style="font-weight:700;margin-bottom:6px">Your data</div>
@@ -496,7 +539,9 @@ async function saveSettings(){''')
     rep('<meta charset="utf-8">',
         '<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Timesheets</title>'
         '<link rel="manifest" href="/manifest.webmanifest"><link rel="icon" href="/icon.png"><link rel="apple-touch-icon" href="/icon.png">'
-        '<meta name="theme-color" content="#15151c">')
+        '<meta name="theme-color" content="#15151c"><meta name="apple-mobile-web-app-capable" content="yes">'
+        '<meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="Timesheets">'
+        '<meta name="apple-mobile-web-app-status-bar-style" content="black">')
     return html
 
 
@@ -538,8 +583,34 @@ ICON_PATH = os.path.join(os.path.dirname(HERE), "timesheets.png")
 def manifest():
     return JSONResponse({"name": "Timesheets", "short_name": "Timesheets", "start_url": "/",
                          "display": "standalone", "background_color": "#eef1f5", "theme_color": "#15151c",
-                         "icons": [{"src": "/icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any"}]},
+                         "id": "/", "scope": "/", "orientation": "portrait",
+                         "icons": [{"src": "/icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+                                   {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"}]},
                         media_type="application/manifest+json")
+
+
+@app.get("/sw.js")
+def service_worker():
+    # Minimal worker so Android offers "Install". It deliberately caches nothing:
+    # every request still goes to the server, so users never see a stale version.
+    return Response("self.addEventListener('install',e=>self.skipWaiting());"
+                    "self.addEventListener('activate',e=>e.waitUntil(self.clients.claim()));"
+                    "self.addEventListener('fetch',()=>{});",
+                    media_type="application/javascript", headers={"Cache-Control": "no-cache"})
+
+
+_ICON192 = None
+
+
+@app.get("/icon-192.png")
+def icon192():
+    global _ICON192
+    if _ICON192 is None:
+        from PIL import Image
+        buf = io.BytesIO()
+        Image.open(ICON_PATH).convert("RGBA").resize((192, 192), Image.LANCZOS).save(buf, "PNG")
+        _ICON192 = buf.getvalue()
+    return Response(_ICON192, media_type="image/png")
 
 
 @app.get("/icon.png")

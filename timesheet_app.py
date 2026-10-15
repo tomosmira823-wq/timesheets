@@ -4948,8 +4948,36 @@ input,select,textarea{transition:border-color .15s ease,box-shadow .15s ease}
   .ts-foot>span>.muted{display:none}
   .ts-foot .btn{flex:1 1 auto}
   .timer-bar{flex-wrap:wrap}.timer-bar>.muted{display:none}
-  .card:has(>table){overflow-x:auto;-webkit-overflow-scrolling:touch}
-  .card>table{min-width:560px}
+  .main{overflow-x:hidden}
+  .main div:has(>table){overflow-x:auto;-webkit-overflow-scrolling:touch;max-width:100%;min-width:0}
+  details.card{overflow-x:auto}
+  .rep-grid{grid-template-columns:1fr;gap:4px}
+  .rep-grid>label{margin-top:8px}
+  .rep-grid select,.rep-grid input:not([type=checkbox]){width:100%;min-width:0}
+  .rep-grid>div{flex-wrap:wrap;min-width:0}
+  .jrow{flex-wrap:wrap;row-gap:6px}
+  .jref{flex:1 1 0;min-width:0}
+  .jpct{order:2}
+  .jtitle{order:3;flex:1 1 100%;font-size:12.5px}
+  .jbar{order:4;flex:1 1 100%;min-width:0}
+  .jrow:hover{padding-left:2px}
+  .card>table:not(.cards){min-width:560px}
+  table.cards,table.cards tbody{display:block;min-width:0!important;width:100%}
+  table.cards thead{display:none}
+  table.cards tr{display:block;padding:10px 4px;border-bottom:1px solid var(--line)}
+  table.cards tbody tr:last-child{border-bottom:0}
+  table.cards tr:hover td{background:none}
+  table.cards td{display:flex;justify-content:space-between;align-items:center;gap:12px;border:0;padding:3px 6px;text-align:right;font-size:13.5px;min-height:24px}
+  table.cards td::before{content:attr(data-label);font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--mut);text-align:left;flex:0 0 auto}
+  table.cards td:empty,table.cards td[data-label=""]:not(:has(*)):not(:first-child){display:none}
+  table.cards td:first-child{font-weight:700;font-size:15px;justify-content:flex-start;text-align:left;padding-bottom:6px}
+  table.cards td:first-child::before{display:none}
+  table.cards td.acts{justify-content:flex-start;flex-wrap:wrap;gap:8px;padding-top:10px}
+  table.cards td.acts::before{display:none}
+  table.cards td.acts .btn{flex:1 1 auto}
+  table.cards td[colspan]{justify-content:center}
+  table.cards td[colspan]::before{display:none}
+  .main div:has(>table.cards){overflow:visible}
   .toolbar{gap:6px}
   .toolbar input,.toolbar select{min-width:0}
   .btn{padding:10px 14px}
@@ -5206,6 +5234,22 @@ function buildNav(){
 function setActive(v){[...document.querySelectorAll('.nav a')].forEach(a=>a.classList.toggle('active',a.dataset.v===v));}
 function head(t,sub){return `<h1>${esc(t)}</h1><div class="h-accent"></div>`+(sub?`<div class="sub">${esc(sub)}</div>`:'');}
 
+// Phone: label every table cell with its column name so CSS can show rows as cards.
+function cardify(root){
+  (root||document).querySelectorAll('#main table:not(.tst):not(.tl), #modal table:not(.tst):not(.tl)').forEach(t=>{
+    const hs=[...t.querySelectorAll('thead th')].map(th=>th.textContent.trim()); if(!hs.length) return;
+    t.classList.add('cards');
+    t.querySelectorAll('tbody tr').forEach(tr=>{ let i=0; [...tr.children].forEach(td=>{
+      if(td.dataset.label===undefined) td.dataset.label=hs[i]||'';
+      if(td.querySelector('button')&&!td.querySelector('input')) td.classList.add('acts');
+      i+=td.colSpan||1; }); });
+  });
+}
+(function(){ let q=0; const run=()=>{q=0; cardify();};
+  const mo=new MutationObserver(()=>{ if(!q) q=requestAnimationFrame(run); });
+  const att=()=>['main','modal'].forEach(id=>{const el=document.getElementById(id); if(el) mo.observe(el,{childList:true,subtree:true});});
+  if(document.getElementById('main')) att(); else document.addEventListener('DOMContentLoaded',att);
+})();
 function toggleMenu(on){ document.body.classList.toggle('menu-open', on===undefined?undefined:!!on); }
 async function nav(v){
   setActive(v); toggleMenu(false);
