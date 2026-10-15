@@ -4699,14 +4699,51 @@ tr.jobrow.dragover td{background:#f1f9ea;box-shadow:inset 0 0 0 1px var(--green)
 .drp-foot{display:flex;align-items:center;gap:10px;margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
 .drp-sel{font-size:13px;color:#2b3040;font-weight:600}
 
-/* ---------- motion (kept subtle) ---------- */
+/* ---------- motion ---------- */
+.nowrap{white-space:nowrap}
+.main{transition:opacity .16s ease}
+.main.leaving{opacity:.45}
+.main.enter>*{animation:fadeUp .38s cubic-bezier(.22,1,.36,1) both}
+.main.enter>*:nth-child(2){animation-delay:.04s}.main.enter>*:nth-child(3){animation-delay:.08s}.main.enter>*:nth-child(4){animation-delay:.12s}.main.enter>*:nth-child(5){animation-delay:.16s}.main.enter>*:nth-child(6){animation-delay:.2s}.main.enter>*:nth-child(7){animation-delay:.24s}.main.enter>*:nth-child(n+8){animation-delay:.28s}
+.main.enter .att-grid>*,.main.enter .kpis>*,.main.enter .fold-grid>*{animation:fadeUp .42s cubic-bezier(.22,1,.36,1) both}
+.main.enter .att-grid>*:nth-child(2),.main.enter .kpis>*:nth-child(2),.main.enter .fold-grid>*:nth-child(2){animation-delay:.06s}
+.main.enter .att-grid>*:nth-child(3),.main.enter .kpis>*:nth-child(3),.main.enter .fold-grid>*:nth-child(3){animation-delay:.12s}
+.main.enter .att-grid>*:nth-child(4),.main.enter .kpis>*:nth-child(4),.main.enter .fold-grid>*:nth-child(4){animation-delay:.18s}
+.main.enter .att-grid>*:nth-child(n+5),.main.enter .kpis>*:nth-child(n+5),.main.enter .fold-grid>*:nth-child(n+5){animation-delay:.24s}
+.main.enter tbody tr{animation:fadeIn .35s ease both}
+.main.enter tbody tr:nth-child(2){animation-delay:.03s}.main.enter tbody tr:nth-child(3){animation-delay:.06s}.main.enter tbody tr:nth-child(4){animation-delay:.09s}.main.enter tbody tr:nth-child(5){animation-delay:.12s}.main.enter tbody tr:nth-child(6){animation-delay:.15s}.main.enter tbody tr:nth-child(n+7){animation-delay:.18s}
+.nav a{transition:background .18s ease,color .18s ease,transform .18s cubic-bezier(.22,1,.36,1)}
+.nav a:hover{transform:translateX(2px)}
+.nav a.active::before{animation:growy .28s cubic-bezier(.22,1,.36,1) both;transform-origin:center}
+@keyframes growy{from{transform:scaleY(0)}to{transform:scaleY(1)}}
+.nav{scrollbar-width:none}.nav::-webkit-scrollbar{width:0;height:0}
+.btn{transition:background .18s ease,color .18s ease,box-shadow .22s ease,transform .18s cubic-bezier(.34,1.56,.64,1)}
+.btn:hover{transform:translateY(-1px);box-shadow:0 6px 16px rgba(108,192,74,.32)}
+.btn.ghost:hover{box-shadow:0 4px 12px rgba(16,20,30,.08)}
+.btn:active{transform:translateY(0) scale(.98);box-shadow:none;transition-duration:.08s}
+.card{transition:box-shadow .28s ease,border-color .28s ease}
+.card:hover{box-shadow:0 6px 22px rgba(16,20,30,.07)}
+.att{transition:transform .24s cubic-bezier(.22,1,.36,1),box-shadow .24s ease,border-color .24s ease}
+.att:hover{transform:translateY(-2px)}
+tr:hover td{transition:background .15s ease}
+.badge{transition:transform .15s ease}.badge:hover{transform:scale(1.04)}
+.jbar i,.rankbar-f,.bar-fill,.stk-b{transform-origin:left center;animation:growx .75s cubic-bezier(.22,1,.36,1) both}
+.jrow{transition:background .15s ease,padding-left .18s ease}.jrow:hover{padding-left:6px}
+.fold{transition:transform .2s cubic-bezier(.22,1,.36,1),border-color .2s ease,box-shadow .2s ease}.fold:hover{transform:translateY(-2px)}
+input,select,textarea{transition:border-color .15s ease,box-shadow .15s ease}
+.signout{transition:background .18s ease,color .18s ease,border-color .18s ease}
+.toast{transition:opacity .25s cubic-bezier(.22,1,.36,1),transform .25s cubic-bezier(.22,1,.36,1)}
+.modal{animation:popIn .3s cubic-bezier(.34,1.3,.64,1)}
+#login .lcard{animation:popIn .5s cubic-bezier(.22,1,.36,1)}
+.doc-chip{transition:border-color .15s,color .15s,background .15s,transform .15s}.doc-chip:hover{transform:translateY(-1px)}
+.drp-d{transition:background .12s ease,transform .12s ease}.drp-d:hover{transform:scale(1.08)}
+/* (base keyframes) */
 @keyframes fadeIn{from{opacity:0}to{opacity:1}}
 @keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 @keyframes growx{from{transform:scaleX(0)}to{transform:scaleX(1)}}
 @keyframes popIn{from{opacity:0;transform:scale(.98)}to{opacity:1;transform:scale(1)}}
 .modal-bg{animation:fadeIn .16s ease}.modal{animation:popIn .2s ease}.lcard{animation:popIn .3s ease}
-.main{animation:fadeIn .18s ease}.card,.att{animation:fadeUp .22s ease both}
-.bar-fill,.stk-b,.rankbar-f{transform-origin:left center;animation:growx .6s cubic-bezier(.22,1,.36,1) both}
+@keyframes popIn{from{opacity:0;transform:scale(.97) translateY(4px)}to{opacity:1;transform:none}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style></head>
 <body class="{{LOGOCLS}}">
@@ -4943,7 +4980,24 @@ function head(t,sub){return `<h1>${esc(t)}</h1><div class="h-accent"></div>`+(su
 
 async function nav(v){
   setActive(v);
-  const m=E('main'); m.innerHTML='<div class="muted">Loading…</div>';
+  const m=E('main'); m.classList.remove('enter'); m.classList.add('leaving');
+  try{ await _navInner(v,m); }
+  finally{ m.classList.remove('leaving'); void m.offsetWidth; m.classList.add('enter'); m.scrollTop=0; setTimeout(countUp,30); }
+}
+function fmtTs(v){ const d=new Date(v); if(isNaN(d)) return esc(v); const dd=d.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}); const t=d.toTimeString().slice(0,5); return `<span class="nowrap">${dd} <span class="muted">${t}</span></span>`; }
+const nowrap=v=>`<span class="nowrap">${esc(v)}</span>`;
+function countUp(){
+  document.querySelectorAll('.kpi .val, .att-big, .timer-disp').forEach(el=>{
+    if(el.dataset.counted) return; el.dataset.counted='1';
+    const txt=el.textContent.trim(); const mm=txt.match(/^(£?)(-?[\d,]+)(\.\d+)?(h|%| h)?$/); if(!mm) return;
+    const target=parseFloat((mm[2]+(mm[3]||'')).replace(/,/g,'')); if(!isFinite(target)||Math.abs(target)<2) return;
+    const dec=mm[3]?mm[3].length-1:0, pre=mm[1]||'', suf=mm[4]||''; const t0=performance.now(), dur=650;
+    const fmt=n=>pre+(dec?n.toFixed(dec):Math.round(n).toLocaleString('en-GB'))+suf;
+    const step=now=>{ const p=Math.min(1,(now-t0)/dur); const e=1-Math.pow(1-p,3); el.textContent=fmt(target*e); if(p<1) requestAnimationFrame(step); else el.textContent=txt; };
+    requestAnimationFrame(step);
+  });
+}
+async function _navInner(v,m){
   try{
     if(v==='dashboard') return renderDash(await API.dashboard());
     if(v==='timesheet') return renderTimesheet();
@@ -4962,7 +5016,7 @@ async function nav(v){
     if(v==='changepw') return changePw();
     if(v==='settings') return renderSettings();
     if(v==='audit') return renderTable(m,'Audit Trail','', await API.audit(),
-        [['time','Timestamp'],['user','User'],['action','Action'],['old','Old'],['new','New']]);
+        [['time','When',fmtTs],['user','Who',nowrap],['action','Action',nowrap],['old','Before'],['new','After']]);
     // not-yet-ported interactive screens
     m.innerHTML=head(NAV.find(n=>n[0]===v)[1])+
       `<div class="card"><div class="muted">This screen's interactive version is coming in the next update. The data and all rules are already live underneath.</div></div>`;
