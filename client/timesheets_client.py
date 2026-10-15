@@ -10,7 +10,7 @@ server (e.g. a test server), put the address in %APPDATA%\\Timesheets\\server.tx
 import os, sys, json, datetime as dt, tempfile, shutil, glob, socket, urllib.parse
 
 APP_NAME = "Timesheets"
-SERVER_URL = "https://timesheets.kivo.co.uk"      # <- the live service
+SERVER_URL = "https://timesheets-pk0t.onrender.com"   # <- the live service (Render)
 
 DATA_DIR = os.path.join(os.environ.get("APPDATA") or tempfile.gettempdir(), APP_NAME)
 LOCAL_DIR = os.path.join(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir(), APP_NAME)
