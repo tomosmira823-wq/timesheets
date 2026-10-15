@@ -1,0 +1,6 @@
+web/data
+**/__pycache__
+build
+dist
+Output
+*.log

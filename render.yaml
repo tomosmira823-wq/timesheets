@@ -1,0 +1,19 @@
+# One-click deploy on Render (render.com): New > Blueprint > point at this repo.
+services:
+  - type: web
+    name: timesheets
+    runtime: docker
+    plan: starter            # needs a paid plan for the persistent disk below
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+      - key: SECURE_COOKIES
+        value: "1"
+      - key: DATA_ROOT
+        value: /data
+    disk:
+      name: timesheets-data
+      mountPath: /data
+      sizeGB: 5

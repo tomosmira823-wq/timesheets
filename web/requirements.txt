@@ -1,0 +1,8 @@
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+openpyxl==3.1.5
+fpdf2==2.8.2
+pdfminer.six==20240706
+pypdf==5.1.0
+pillow==11.0.0
+pytesseract==0.3.13

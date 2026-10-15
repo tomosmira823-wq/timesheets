@@ -1,0 +1,17 @@
+# Alternative: fly.io.  fly launch --copy-config ; fly volumes create data --size 5 ; fly deploy
+app = "timesheets"
+primary_region = "lhr"
+[build]
+  dockerfile = "Dockerfile"
+[env]
+  DATA_ROOT = "/data"
+  SECURE_COOKIES = "1"
+  PORT = "8080"
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  min_machines_running = 1
+[mounts]
+  source = "data"
+  destination = "/data"

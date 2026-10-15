@@ -1,0 +1,9 @@
+__pycache__/
+web/data/
+build-win/runtime/
+build-win/stage/
+build-win/dl/
+build-win/*.exe
+build-win/launcher/*.exe
+build-win/launcher/*.res
+*.log
