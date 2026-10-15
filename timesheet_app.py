@@ -4426,13 +4426,13 @@ def parse_iso(s):
 
 
 INDEX_HTML = r"""<!DOCTYPE html><html><head><meta charset="utf-8">
-<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap">
 <style>
 /* Timesheets - design tokens. Dark ink sidebar, cool neutral workspace, green as an accent only. */
 :root{--green:#6cc04a;--green-d:#3f8a23;--green-soft:#e9f6df;--ink:#15171c;--side:#0f1117;--side-2:#181b23;
 --bg:#f3f4f7;--card:#ffffff;--mut:#6b7280;--mut-2:#9aa0ab;--line:#e6e8ec;--line-2:#eef0f3;
 --amber:#d98c00;--amber-soft:#fff3dc;--red:#d4383a;--red-soft:#fde7e7;--blue:#2f6fd6;--blue-soft:#e4edfb;
---font:"Plus Jakarta Sans",-apple-system,"Segoe UI",Roboto,Arial,sans-serif;--mono:"JetBrains Mono",ui-monospace,Consolas,monospace;
+--font:"Plus Jakarta Sans",-apple-system,"Segoe UI",Roboto,Arial,sans-serif;--mono:var(--font);
 --r:12px;--r-sm:9px;--shadow:0 1px 2px rgba(16,20,30,.05),0 1px 1px rgba(16,20,30,.03);--shadow-lg:0 12px 40px rgba(16,20,30,.14);}
 *{box-sizing:border-box;font-family:var(--font);}
 html{font-size:14px}
@@ -4515,7 +4515,7 @@ h1{font-size:24px;font-weight:800;letter-spacing:-.02em;margin:0 0 4px;color:var
 .kpis-4{grid-template-columns:repeat(auto-fit,minmax(158px,1fr))}
 .card{background:var(--card);border-radius:var(--r);border:1px solid var(--line);box-shadow:var(--shadow);padding:18px 20px}
 .kpi .lab{font-size:11px;color:var(--mut);font-weight:700;text-transform:uppercase;letter-spacing:.1em}
-.kpi .val{font-size:26px;font-weight:700;margin-top:8px;color:var(--ink);font-family:var(--mono);font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.kpi .val{font-size:27px;font-weight:800;margin-top:8px;color:var(--ink);font-variant-numeric:tabular-nums;letter-spacing:-.02em}
 .kpi .val.green{color:var(--green-d)}
 .two{display:grid;grid-template-columns:1.4fr 1fr;gap:14px;margin-top:14px}
 .chart-empty{color:var(--mut);font-size:13px;padding:20px 0}
@@ -4527,8 +4527,8 @@ td{padding:10px 12px;border-bottom:1px solid var(--line-2);font-size:13.5px;vert
 tbody tr:last-child td{border-bottom:0}
 tr:hover td{background:#f8fafc}
 tbody tr{transition:background .12s ease}
-.tnum{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--mono);font-size:12.5px}
-th.tnum{font-family:var(--font);font-size:10.5px}
+.tnum{text-align:right;font-variant-numeric:tabular-nums}
+th.tnum{font-size:10.5px}
 th.sortable{cursor:pointer;user-select:none}
 th.sortable:hover{color:var(--ink)}
 .sortarrow{font-size:9px;margin-left:4px;color:var(--green-d)}
@@ -4578,7 +4578,7 @@ tr.jobrow.dragover td{background:#f1f9ea;box-shadow:inset 0 0 0 1px var(--green)
 .jref{flex:0 0 148px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600}
 .jtitle{flex:0 0 175px;color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .jbar{flex:1 1 auto;height:7px;border-radius:5px;background:#eceef2;overflow:hidden;min-width:80px}
-.jpct{flex:0 0 52px;text-align:right;font-weight:700;font-variant-numeric:tabular-nums;font-family:var(--mono);font-size:12px}
+.jpct{flex:0 0 52px;text-align:right;font-weight:700;font-variant-numeric:tabular-nums;font-size:12.5px}
 .jbar i{display:block;height:100%;border-radius:5px}
 .kpi-doc{cursor:pointer;position:relative;transition:border-color .12s,box-shadow .15s}
 .kpi-doc:hover{border-color:#cfd4dc;box-shadow:0 6px 18px rgba(16,20,30,.08)}
@@ -4661,14 +4661,14 @@ tr.jobrow.dragover td{background:#f1f9ea;box-shadow:inset 0 0 0 1px var(--green)
 .ts-foot{display:flex;align-items:center;margin-top:14px;gap:8px}
 .timer-bar{display:flex;align-items:center;gap:12px;background:#fff;border:1px solid var(--line);border-radius:10px;padding:8px 14px;margin-bottom:12px;box-shadow:var(--shadow)}
 .timer-lbl{font-size:10.5px;font-weight:800;letter-spacing:.12em;color:var(--green-d)}
-.timer-disp{font-variant-numeric:tabular-nums;font-size:20px;font-weight:600;color:var(--ink);min-width:98px;font-family:var(--mono)}
+.timer-disp{font-variant-numeric:tabular-nums;font-size:20px;font-weight:700;color:var(--ink);min-width:98px;letter-spacing:.02em}
 .day-actions{float:right;opacity:1;display:inline-flex;gap:6px}
 .tl{border-collapse:separate;border-spacing:2px;font-size:12.5px}
 .tl th{font-weight:700;color:var(--mut);padding:4px 6px;text-align:center;font-size:10.5px;border:0}
 .tl th.tl-job{text-align:left;min-width:150px}
 .tl-job{text-align:left;white-space:nowrap;padding-right:12px}
 .tl-sub{font-size:10.5px;color:var(--mut-2);font-weight:400}
-.tlc{width:40px;text-align:center;border-radius:6px;padding:6px 2px;font-variant-numeric:tabular-nums;font-family:var(--mono);font-size:12px}
+.tlc{width:40px;text-align:center;border-radius:6px;padding:6px 2px;font-variant-numeric:tabular-nums;font-size:12.5px}
 .tl-tot{background:#eef0f3;font-weight:700}
 .tlc-click{cursor:pointer}.tlc-click:hover{outline:2px solid var(--green)}
 .tl-row{cursor:pointer}.tl-row:hover td.tl-job{color:var(--green-d)}.tl-row:hover .tlc{outline:1px solid rgba(108,192,74,.5)}
