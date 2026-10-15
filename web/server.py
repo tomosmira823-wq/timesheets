@@ -538,6 +538,7 @@ async def signup(request: Request):
     cfg["company_name"] = company
     _save_company_cfg(cfg)
     db = company_db(cid)
+    db.set_meta("company_name", company)
     db.create_first_admin(name, email, pw)
     sync_directory(cid)
     u = _public_user(db.get_user_by_email(email))
@@ -689,6 +690,14 @@ async def import_database(request: Request, file: UploadFile = File(...)):
             _DBS.pop(cid, None)
         shutil.move(tmp, live)
         db = company_db(cid)                     # init_schema + seed_defaults = migrations
+        try:                                      # the file carries its company name (newer desktop builds)
+            nm = (db.get_meta("company_name") or "").strip()
+            if nm:
+                cfg = load_company_cfg(cid); cfg["company_name"] = nm; _save_company_cfg(cfg)
+                with _acc() as con:
+                    con.execute("UPDATE companies SET name=? WHERE id=?", (nm, cid))
+        except Exception:
+            pass
         relinked = _relink_attachments(cid)
         sync_directory(cid)
         with db.conn() as con:

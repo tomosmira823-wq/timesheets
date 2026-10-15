@@ -173,6 +173,10 @@ class DB:
         with self.conn() as con:
             con.executescript(
                 """
+                CREATE TABLE IF NOT EXISTS app_meta (
+                    key   TEXT PRIMARY KEY,
+                    value TEXT NOT NULL DEFAULT ''
+                );
                 CREATE TABLE IF NOT EXISTS users (
                     id            INTEGER PRIMARY KEY AUTOINCREMENT,
                     full_name     TEXT NOT NULL,
@@ -371,6 +375,15 @@ class DB:
                         for s in saved]
                 con.execute("UPDATE timesheets SET submitted_snapshot=? WHERE id=?",
                             (json.dumps(snap), tid))
+
+    def get_meta(self, key, default=""):
+        with self.conn() as con:
+            r = con.execute("SELECT value FROM app_meta WHERE key=?", (key,)).fetchone()
+            return r["value"] if r else default
+
+    def set_meta(self, key, value):
+        with self.conn() as con:
+            con.execute("INSERT OR REPLACE INTO app_meta(key, value) VALUES(?,?)", (key, str(value)))
 
     def needs_setup(self):
         """True until the first (admin) account exists."""
@@ -2600,6 +2613,7 @@ class Api:
         self.cfg["company_name"] = company
         save_config(self.cfg)
         try:
+            self.db.set_meta("company_name", company)
             self.db.create_first_admin(full_name, email, password)
         except Exception as e:
             return {"ok": False, "error": str(e)}
@@ -2629,6 +2643,10 @@ class Api:
         vals = vals or {}
         old = dict(self.cfg)
         self.cfg["company_name"] = str(vals.get("company_name", "")).strip()
+        try:
+            self.db.set_meta("company_name", self.cfg["company_name"])
+        except Exception:
+            pass
         try:
             self.cfg["weekly_target_hours"] = max(1.0, float(vals.get("weekly_target_hours", 37.5)))
             self.cfg["daily_hours_warning"] = max(1.0, float(vals.get("daily_hours_warning", 10)))
