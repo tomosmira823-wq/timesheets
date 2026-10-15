@@ -12,7 +12,7 @@ Env:   DATA_ROOT   where company data lives (default ./data)
        SECRET_KEY  signs session cookies (set a long random one in production)
        SECURE_COOKIES=1 behind HTTPS (Render/Fly/etc.)
 """
-import os, sys, json, hmac, hashlib, base64, time, re, secrets, shutil, threading
+import os, sys, json, hmac, hashlib, base64, time, re, secrets, shutil, threading, urllib.parse
 import datetime as dt
 import types
 
@@ -165,6 +165,24 @@ def read_session(token):
         return None
 
 
+def file_token(cid, path, minutes=15):
+    exp = int(time.time()) + minutes * 60
+    return _sign(json.dumps({"cid": int(cid), "p": path, "exp": exp}).encode())
+
+
+def read_file_token(tok):
+    try:
+        p, sg = tok.split(".", 1)
+        payload = base64.urlsafe_b64decode(p.encode())
+        sig = base64.urlsafe_b64decode(sg.encode())
+        if not hmac.compare_digest(sig, hmac.new(SECRET, payload, hashlib.sha256).digest()):
+            return None
+        d = json.loads(payload)
+        return d if d.get("exp", 0) >= time.time() else None
+    except Exception:
+        return None
+
+
 def set_cookie(resp: Response, token, days):
     resp.set_cookie(COOKIE, token, max_age=int(days * 86400), httponly=True,
                     samesite="lax", secure=SECURE_COOKIES, path="/")
@@ -251,6 +269,17 @@ class WebApi(ts.Api):
         self.db.audit(u["email"], "SETTINGS", "", "Logo changed")
         return {"ok": True, "logo": self._logo_cache}
 
+    def file_link(self, path):
+        """A link to open a document or export that works without the session
+        cookie (desktop app hands it to the system browser). Valid 15 minutes."""
+        self._need()
+        path = os.path.abspath(path or "")
+        allowed = (os.path.abspath(company_dir(self.cid)) + os.sep,
+                   os.path.abspath(os.path.join(EXPORTS_DIR, str(self.cid))) + os.sep)
+        if not path.startswith(allowed) or not os.path.isfile(path):
+            return {"ok": False, "error": "That file isn't here any more."}
+        return {"ok": True, "url": "/api/open?t=" + urllib.parse.quote(file_token(self.cid, path))}
+
     def remove_logo(self):
         self._admin()
         try:
@@ -321,9 +350,11 @@ BRIDGE_JS = r"""<script>
     const r=await call('save_dropped_file',[f.name,await toB64(f)]); if(!r||!r.ok){ alert((r&&r.error)||'Upload failed'); return null; } return r.path; }
   const CLIENT=(function(){ try{ if(location.search.indexOf('client=1')>=0) localStorage.setItem('ts_client','1'); return localStorage.getItem('ts_client')==='1'; }catch(e){ return location.search.indexOf('client=1')>=0; } })();
   window.TS_CLIENT=CLIENT;
-  function openPath(p){ if(!p) return false; const u='/api/open?p='+encodeURIComponent(p);
-    if(CLIENT){ let f=document.getElementById('_dlframe'); if(!f){ f=document.createElement('iframe'); f.id='_dlframe'; f.style.display='none'; document.body.appendChild(f); } f.src=u+'&dl=1'; return true; }
-    window.open(u,'_blank'); return true; }
+  async function openPath(p){ if(!p) return false;
+    let r=null; try{ r=await call('file_link',[p]); }catch(e){}
+    const u=(r&&r.ok)?r.url:('/api/open?p='+encodeURIComponent(p));
+    if(r&&!r.ok&&r.error){ alert(r.error); return false; }
+    const a=document.createElement('a'); a.href=location.origin+u; a.target='_blank'; a.rel='noopener'; document.body.appendChild(a); a.click(); setTimeout(()=>a.remove(),500); return true; }
   const special={
     pick_file:()=>upload('.pdf,.png,.jpg,.jpeg,.gif,.heic'),
     pick_document:()=>upload('.pdf,.png,.jpg,.jpeg,.tif,.tiff'),
@@ -759,12 +790,18 @@ _INLINE = {".pdf": "application/pdf", ".png": "image/png", ".jpg": "image/jpeg",
 
 
 @app.get("/api/open")
-def open_path(request: Request, p: str = "", dl: str = ""):
-    cur = current(request)
-    if not cur:
-        return RedirectResponse("/")
-    cid, _ = cur
-    path = os.path.abspath(p or "")
+def open_path(request: Request, p: str = "", dl: str = "", t: str = ""):
+    if t:
+        d = read_file_token(t)
+        if not d:
+            raise HTTPException(403, "This link has expired - open the file again from the app.")
+        cid, path = d["cid"], os.path.abspath(d["p"])
+    else:
+        cur = current(request)
+        if not cur:
+            return RedirectResponse("/")
+        cid, _ = cur
+        path = os.path.abspath(p or "")
     allowed = (os.path.abspath(company_dir(cid)) + os.sep, os.path.abspath(os.path.join(EXPORTS_DIR, str(cid))) + os.sep)
     if not path.startswith(allowed) or not os.path.isfile(path):
         raise HTTPException(404)
