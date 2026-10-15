@@ -36,6 +36,7 @@ import timesheet_app as ts                           # noqa: E402
 
 from fastapi import FastAPI, Request, Response, HTTPException   # noqa: E402
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, RedirectResponse  # noqa: E402
+from starlette.concurrency import run_in_threadpool  # noqa: E402
 import sqlite3                                       # noqa: E402
 
 SECRET = (os.environ.get("SECRET_KEY") or "").encode() or None
@@ -214,6 +215,20 @@ class FakeWindow:
         return None
 
 
+# Role gates. The desktop app hid these in the UI; online they must be enforced.
+MANAGER_ONLY = {"approvals", "approve", "approval_lines", "save_admin_lines", "job_costs",
+                "rates_for_job", "save_rates", "run_report", "export_report", "job_cost_pdf",
+                "month_end_export", "export_timesheet_template", "import_external_timesheet",
+                "analytics", "job_timeline", "job_timeline_detail", "timeline_lines", "job_billing",
+                "job_documents", "document_folders", "dash_jobs_at_risk", "export_invoice_template",
+                "import_invoices", "scan_document", "ocr_status"}
+ADMIN_ONLY = {"audit", "users", "jobs", "roles", "add_user", "update_user", "reset_password",
+              "delete_user", "add_job", "update_job", "delete_job", "add_role", "toggle_role",
+              "tidy_documents", "get_settings", "save_settings", "set_logo", "remove_logo",
+              "save_goals", "add_variation", "update_variation", "delete_variation", "add_invoice",
+              "update_invoice", "set_invoice_paid", "delete_invoice", "add_bill", "update_bill",
+              "set_bill_paid", "delete_bill", "add_document", "delete_document", "attach_payment"}
+
 # Methods that only make sense on the desktop, or that this server replaces.
 BLOCKED = {"pick_data_folder", "complete_setup", "change_data_folder",
            "open_data_folder", "open_file", "open_folder", "pick_file",
@@ -305,6 +320,28 @@ def _public_user(row):
     for k in ("password_hash", "salt", "auth_token"):
         u.pop(k, None)
     return u
+
+
+_FAILS = {}
+_FAILS_LOCK = threading.Lock()
+
+
+def _too_many(key, limit=10, window=900):
+    now = time.time()
+    with _FAILS_LOCK:
+        hits = [t for t in _FAILS.get(key, []) if now - t < window]
+        _FAILS[key] = hits
+        return len(hits) >= limit
+
+
+def _record_fail(key):
+    with _FAILS_LOCK:
+        _FAILS.setdefault(key, []).append(time.time())
+
+
+def _clear_fail(key):
+    with _FAILS_LOCK:
+        _FAILS.pop(key, None)
 
 
 def find_login(ident, password):
@@ -551,9 +588,15 @@ async def signup(request: Request):
 async def login(request: Request):
     body = await request.json()
     args = body.get("args") or ["", ""]
-    found = find_login(args[0] if args else "", args[1] if len(args) > 1 else "")
+    ident = str(args[0] if args else "").strip().lower()
+    ip = (request.headers.get("x-forwarded-for") or (request.client.host if request.client else "") or "").split(",")[0].strip()
+    if _too_many("u:" + ident) or _too_many("ip:" + ip, limit=40):
+        return JSONResponse({"error": "Too many sign-in attempts. Wait 15 minutes and try again."}, status_code=429)
+    found = await run_in_threadpool(find_login, ident, args[1] if len(args) > 1 else "")
     if not found:
+        _record_fail("u:" + ident); _record_fail("ip:" + ip)
         return {"result": None}
+    _clear_fail("u:" + ident)
     cid, u = found
     resp = JSONResponse({"result": u})
     set_cookie(resp, make_session(cid, u["id"], 1, u["email"]), 1)   # 'remember' extends it below
@@ -766,8 +809,20 @@ async def api_call(method: str, request: Request):
     if not cur:
         return JSONResponse({"error": "Not signed in"}, status_code=401)
     cid, user = cur
-    body = await request.json()
+    role = user.get("user_type") or "Standard"
+    if method in ADMIN_ONLY and role != "Admin":
+        return JSONResponse({"error": "Admins only"}, status_code=403)
+    if method in MANAGER_ONLY and role not in ("Manager", "Admin"):
+        return JSONResponse({"error": "Managers only"}, status_code=403)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Bad request"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "Bad request"}, status_code=400)
     args = body.get("args") or []
+    if not isinstance(args, list) or len(args) > 20:
+        return JSONResponse({"error": "Bad request"}, status_code=400)
     upload = body.get("upload")
     if upload:
         upload = os.path.abspath(str(upload))
@@ -778,7 +833,7 @@ async def api_call(method: str, request: Request):
     if fn is None or not callable(fn):
         raise HTTPException(404)
     try:
-        result = fn(*args)
+        result = await run_in_threadpool(fn, *args)
     except PermissionError as e:
         return JSONResponse({"error": str(e)}, status_code=403)
     except TypeError as e:
