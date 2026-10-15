@@ -73,10 +73,12 @@ def main():
         webview.create_window(APP_NAME, maximized=True, **kw)
     except TypeError:
         webview.create_window(APP_NAME, **kw)
+    icon = os.path.join(os.path.dirname(os.path.abspath(__file__)), "timesheets.ico")
+    kws = {"icon": icon} if os.path.exists(icon) else {}
     if store:
-        webview.start(private_mode=False, storage_path=store)
+        webview.start(private_mode=False, storage_path=store, **kws)
     else:
-        webview.start()
+        webview.start(**kws)
 
 
 if __name__ == "__main__":
