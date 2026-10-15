@@ -5132,7 +5132,7 @@ async function nav(v){
   setActive(v);
   const m=E('main'); m.classList.remove('enter'); m.classList.add('leaving');
   try{ await _navInner(v,m); }
-  finally{ m.classList.remove('leaving'); void m.offsetWidth; m.classList.add('enter'); m.scrollTop=0; setTimeout(countUp,30); }
+  finally{ m.classList.remove('leaving'); void m.offsetWidth; m.classList.add('enter'); m.scrollTop=0; setTimeout(countUp,30); clearTimeout(window._enterT); window._enterT=setTimeout(()=>m.classList.remove('enter'),800); }
 }
 function fmtTs(v){ const d=new Date(v); if(isNaN(d)) return esc(v); const dd=d.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}); const t=d.toTimeString().slice(0,5); return `<span class="nowrap">${dd} <span class="muted">${t}</span></span>`; }
 const nowrap=v=>`<span class="nowrap">${esc(v)}</span>`;
