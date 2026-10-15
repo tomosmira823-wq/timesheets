@@ -76,6 +76,14 @@ DEFAULT_CATEGORIES = [
 ]
 
 USER_TYPES = ["Standard", "Manager", "Admin"]
+
+# Targets shown on the Analytics page (admins can change them in the app).
+DEFAULT_GOALS = {
+    "utilisation_pct": 80,        # billable share of logged hours
+    "monthly_invoiced": 100000,   # £ invoiced per month
+    "submission_pct": 95,         # timesheets submitted on time
+    "overtime_cap": 60,           # overtime hours per month, keep below
+}
 TS_STATUSES = ["Draft", "Submitted", "Approved", "Rejected", "Locked"]
 
 # Overtime rates and their pay multipliers.
@@ -2621,6 +2629,25 @@ class Api:
         return {"ok": True}
 
     # ---- settings (admin) ----
+    def get_goals(self):
+        self._need()
+        g = dict(DEFAULT_GOALS); g.update(self.cfg.get("goals") or {})
+        return g
+
+    def save_goals(self, vals):
+        u = self._admin()
+        g = dict(DEFAULT_GOALS); g.update(self.cfg.get("goals") or {})
+        for k in DEFAULT_GOALS:
+            if k in (vals or {}):
+                try:
+                    g[k] = max(0.0, float(vals[k]))
+                except (TypeError, ValueError):
+                    return {"ok": False, "error": "Goals must be numbers."}
+        self.cfg["goals"] = g
+        save_config(self.cfg)
+        self.db.audit(u["email"], "GOALS", "", json.dumps(g))
+        return {"ok": True, "goals": g}
+
     def get_settings(self):
         u = self._need()
         if u["user_type"] != "Admin":
@@ -4167,7 +4194,7 @@ class Api:
                                               "FROM job_refs").fetchall()}
             adj = con.execute(
                 "SELECT u.id uid, u.full_name, j.id jid, j.job_ref, j.job_title, "
-                "j.kind, l.hours, l.rate FROM timesheet_lines l "
+                "j.kind, l.hours, l.rate, l.work_date FROM timesheet_lines l "
                 "JOIN timesheets t ON t.id=l.timesheet_id "
                 "JOIN users u ON u.id=t.user_id "
                 "JOIN job_refs j ON j.id=l.job_ref_id "
@@ -4182,10 +4209,19 @@ class Api:
         adj_person = {}      # uid -> adjusted hours
         adj_job = {}         # jid -> adjusted hours
         tot_bill = tot_non = 0.0
+        weekly = {}          # monday iso -> billable / nonbill / overtime
         for r in adj:
             uid = r["uid"]; h = float(r["hours"]); rt = r["rate"] or "Normal"
             kind = r["kind"] or "Project"
             name_map[uid] = r["full_name"]
+            try:
+                wk = monday_of(dt.date.fromisoformat(r["work_date"])).isoformat()
+            except Exception:
+                wk = dfi
+            wrow = weekly.setdefault(wk, {"billable": 0.0, "nonbill": 0.0, "overtime": 0.0})
+            wrow["billable" if kind == "Project" else "nonbill"] += h
+            if RATE_MULT.get(rt, 1.0) > 1.0:
+                wrow["overtime"] += h
             d = util.setdefault(uid, {"billable": 0.0, "nonbill": 0.0})
             if kind == "Project":
                 d["billable"] += h; tot_bill += h
@@ -4289,9 +4325,50 @@ class Api:
                 exp_by_job[k] = round(exp_by_job.get(k, 0.0) + val, 2)
         exp_rows = sorted([{"job": k, "value": v} for k, v in exp_by_job.items()],
                           key=lambda x: -x["value"])
+        # weekly series (every week in the period, zero-filled)
+        wk_series = []
+        wk0 = monday_of(df)
+        while wk0 <= dtt:
+            k = wk0.isoformat(); w = weekly.get(k, {"billable": 0.0, "nonbill": 0.0, "overtime": 0.0})
+            wk_series.append({"week": k, "label": wk0.strftime("%d %b"),
+                              "billable": round(w["billable"], 1), "nonbill": round(w["nonbill"], 1),
+                              "overtime": round(w["overtime"], 1)})
+            wk0 += dt.timedelta(days=7)
+        # money in the period
+        inv_period = inv_unpaid = bills_period = bills_unpaid = 0.0
+        for i in self.db.list_invoices():
+            v = float(i.get("value", 0) or 0)
+            if dfi <= (i.get("inv_date") or "") <= dti:
+                inv_period += v
+            if (i.get("status") or "") != "Paid":
+                inv_unpaid += v
+        for b in self.db.list_bills():
+            v = float(b.get("value", 0) or 0)
+            if dfi <= (b.get("bill_date") or "") <= dti:
+                bills_period += v
+            if (b.get("status") or "") != "Paid":
+                bills_unpaid += v
+        # on-time submission rate: share of (active person x completed week) with a submitted sheet
+        with self.db.conn() as con:
+            active_ids = [r["id"] for r in con.execute("SELECT id FROM users WHERE active=1").fetchall()]
+            done = {(r["user_id"], r["week_start"]) for r in con.execute(
+                "SELECT user_id, week_start FROM timesheets WHERE status IN ('Submitted','Approved','Locked')").fetchall()}
+        with self.db.conn() as con:
+            first_wk = (con.execute("SELECT MIN(week_start) m FROM timesheets").fetchone() or {"m": None})["m"] or dfi
+        weeks_done = [w["week"] for w in wk_series
+                      if w["week"] >= first_wk and dt.date.fromisoformat(w["week"]) + dt.timedelta(days=6) < today]
+        expected = len(active_ids) * len(weeks_done)
+        got = sum(1 for uid in active_ids for w in weeks_done if (uid, w) in done)
+        sub_rate = round(got / expected * 100, 1) if expected else 100.0
+        months = max(1.0, ((dtt - df).days + 1) / 30.4)
+        goals = dict(DEFAULT_GOALS); goals.update(self.cfg.get("goals") or {})
         return {
-            "period": {"from": dfi, "to": dti,
+            "period": {"from": dfi, "to": dti, "months": round(months, 2),
                        "label": f"{df.strftime('%d %b %Y')} - {dtt.strftime('%d %b %Y')}"},
+            "weekly": wk_series, "goals": goals,
+            "money": {"invoiced": round(inv_period, 2), "invoiced_unpaid": round(inv_unpaid, 2),
+                      "bills": round(bills_period, 2), "bills_unpaid": round(bills_unpaid, 2)},
+            "submission_rate": sub_rate, "people": len(active_ids),
             "util": {"company_pct": comp_util, "billable": round(tot_bill, 2),
                      "nonbill": round(tot_non, 2), "rows": util_rows},
             "leak_person": leak_person, "leak_job": leak_job,
@@ -4496,6 +4573,8 @@ select,textarea{font-family:inherit;color:var(--ink)}
 .btn:hover{background:#5db13c;color:#0f2a07}
 .btn:active{transform:translateY(1px)}
 .btn.sm{width:auto;padding:8px 13px;font-size:12.5px}
+.avatar{display:inline-flex;align-items:center;justify-content:center;border-radius:50%;font-weight:700;letter-spacing:.02em;flex:0 0 auto;line-height:1}
+.person{display:inline-flex;align-items:center;gap:9px;white-space:nowrap}
 .btn.xs{font-size:11px;padding:3px 9px;border-radius:7px;width:auto}
 .btn.ghost{background:#fff;color:#2b3040;border:1px solid var(--line);box-shadow:var(--shadow)}
 .btn.ghost:hover{background:#f7f8fa;border-color:#d5d9e0;color:var(--ink)}
@@ -4674,7 +4753,18 @@ tr.jobrow.dragover td{background:#f1f9ea;box-shadow:inset 0 0 0 1px var(--green)
 .idle-warn{position:fixed;bottom:20px;right:20px;z-index:80;background:#fff;border:1px solid var(--line);border-left:4px solid var(--amber);border-radius:12px;padding:14px 16px;box-shadow:var(--shadow-lg);display:flex;align-items:center;gap:14px;font-size:13.5px;max-width:420px}
 
 /* ---------- timesheet / timer / timeline ---------- */
-.ts-top{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+.ts-top{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.wk-strip{display:flex;gap:6px;margin:0 0 14px;flex-wrap:wrap}
+.wk{display:inline-flex;align-items:center;gap:7px;padding:6px 11px;border-radius:999px;border:1px solid var(--line);background:#fff;font-size:12.5px;font-weight:600;color:#4b5160;cursor:pointer;transition:border-color .15s,background .15s,color .15s,transform .15s cubic-bezier(.22,1,.36,1)}
+.wk:hover{border-color:#cfd4dc;transform:translateY(-1px)}
+.wk.on{background:var(--ink);border-color:var(--ink);color:#fff}
+.wk.now:not(.on){border-color:var(--green)}
+.wk-d{width:7px;height:7px;border-radius:50%;background:#d5d9e0}
+.wk.s-Approved .wk-d,.wk.s-Locked .wk-d{background:var(--green)}
+.wk.s-Submitted .wk-d{background:var(--amber)}
+.wk.s-Rejected .wk-d{background:var(--red)}
+.wk.s-Draft .wk-d{background:#9aa0ab}
+.wk.on .wk-d{box-shadow:0 0 0 2px rgba(255,255,255,.35)}
 .ts-week{font-weight:700;color:var(--ink);font-size:15px}
 .ts-foot{display:flex;align-items:center;margin-top:14px;gap:8px}
 .timer-bar{display:flex;align-items:center;gap:12px;background:#fff;border:1px solid var(--line);border-radius:10px;padding:8px 14px;margin-bottom:12px;box-shadow:var(--shadow)}
@@ -4717,6 +4807,44 @@ tr.jobrow.dragover td{background:#f1f9ea;box-shadow:inset 0 0 0 1px var(--green)
 .drp-foot{display:flex;align-items:center;gap:10px;margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
 .drp-sel{font-size:13px;color:#2b3040;font-weight:600}
 
+/* ---------- analytics ---------- */
+.an-top{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:0 0 18px}
+.seg{display:inline-flex;background:#fff;border:1px solid var(--line);border-radius:10px;padding:3px;gap:2px}
+.seg button{background:transparent;border:0;padding:6px 12px;border-radius:7px;font-size:12.5px;font-weight:600;color:#4b5160;cursor:pointer;transition:background .15s,color .15s}
+.seg button:hover{background:#f3f4f7;color:var(--ink)}
+.seg button.on{background:var(--ink);color:#fff}
+.an-range{display:flex;align-items:center;gap:8px;margin-left:auto}
+.an-range input{width:132px;margin:0;padding:7px 30px 7px 10px;font-size:12.5px}
+.goal-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px}
+.goal{display:flex;gap:14px;align-items:center;padding:16px 18px;border-left:4px solid var(--green)}
+.goal.warn{border-left-color:var(--amber)}.goal.bad{border-left-color:var(--red)}
+.goal .ring{flex:0 0 64px}
+.goal-b{min-width:0}
+.goal .lab{font-size:11px;color:var(--mut);font-weight:700;text-transform:uppercase;letter-spacing:.1em}
+.goal .val{font-size:24px;font-weight:800;letter-spacing:-.02em;line-height:1.15;margin-top:3px;font-variant-numeric:tabular-nums}
+.goal-t{font-size:12.5px;color:#3b4150;margin-top:3px}
+.goal-s{font-size:11.5px;color:var(--mut);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ring circle:nth-child(2){stroke-dashoffset:var(--c);animation:ringIn 1s .15s cubic-bezier(.22,1,.36,1) forwards}
+@keyframes ringIn{to{stroke-dashoffset:var(--o)}}
+.legend{margin-left:auto;display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:500;color:var(--mut)}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-left:10px}
+.hbars{display:flex;flex-direction:column;gap:7px}
+.hrow{display:grid;grid-template-columns:180px 1fr 52px 64px;gap:10px;align-items:center;font-size:13px}
+.hrow .hname{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hrow .hb{height:9px;background:#eceef2;border-radius:5px;overflow:hidden}
+.hrow .hb i{display:block;height:100%;border-radius:5px;transform-origin:left center;animation:growx .7s cubic-bezier(.22,1,.36,1) both}
+.hrow .hv{text-align:right;font-weight:700;font-variant-numeric:tabular-nums}
+.hrow .hh{text-align:right;font-size:11.5px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.an-details summary{display:flex;align-items:center;gap:12px;cursor:pointer;list-style:none;flex-wrap:wrap}
+.an-details summary::-webkit-details-marker{display:none}
+.an-details summary::before{content:"▸";color:var(--mut);font-size:12px;transition:transform .2s}
+.an-details[open] summary::before{transform:rotate(90deg)}
+/* ---------- charts ---------- */
+svg.bars .bar{transform-origin:bottom;animation:growy .6s cubic-bezier(.22,1,.36,1) both}
+svg.bars .bar rect{transition:fill .15s ease}
+svg.bars .bar:hover rect:first-child{fill:var(--green)}
+svg.bars .trend{stroke-dasharray:1000;stroke-dashoffset:1000;animation:draw 1.1s .3s ease-out forwards}
+@keyframes draw{to{stroke-dashoffset:0}}
 /* ---------- motion ---------- */
 .nowrap{white-space:nowrap}
 .main{transition:opacity .16s ease}
@@ -4830,6 +4958,10 @@ window.addEventListener('unhandledrejection',function(ev){
 let API=null, USER=null;
 const E=(id)=>document.getElementById(id);
 function esc(s){return (s==null?'':String(s)).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+const _AVC=['#6cc04a','#2f6fd6','#d98c00','#9b59b6','#e2575b','#15a3a3','#7a8a2b','#d2477a','#4f6bed','#b36b00'];
+function avatar(name,size){const n=String(name||'').trim();const parts=n.split(/\s+/);const ini=((parts[0]||'')[0]||'')+((parts[1]||'')[0]||'');let h=0;for(const ch of n)h=(h*31+ch.charCodeAt(0))>>>0;const c=_AVC[h%_AVC.length];const sz=size||26;
+  return `<span class="avatar" style="width:${sz}px;height:${sz}px;font-size:${Math.round(sz*0.4)}px;background:${c}1f;color:${c}" title="${esc(n)}">${esc(ini.toUpperCase())}</span>`;}
+function person(name,size){return `<span class="person">${avatar(name,size)}<span>${esc(name)}</span></span>`;}
 function badge(s){return `<span class="badge b-${esc(s)}">${esc(s)}</span>`;}
 function _isoUTC(iso){const p=String(iso).slice(0,10).split('-').map(Number);return Date.UTC(p[0],p[1]-1,p[2]);}
 function shiftISO(iso,days){const d=new Date(_isoUTC(iso));d.setUTCDate(d.getUTCDate()+days);return d.toISOString().slice(0,10);}
@@ -5051,7 +5183,7 @@ function renderTable(m,title,sub,rows,cols){
   rows.forEach(r=>{ h+='<tr>'; cols.forEach(c=>{
     let v=r[c[0]], f=c[2];
     if(f==='num') h+=`<td class="tnum">${esc(v)}</td>`;
-    else if(f==='money') h+=`<td class="tnum">£${Number(v||0).toFixed(2)}</td>`;
+    else if(f==='money') h+=`<td class="tnum">${money(v)}</td>`;
     else if(typeof f==='function') h+=`<td>${f(v)}</td>`;
     else h+=`<td>${esc(v)}</td>`;
   }); h+='</tr>'; });
@@ -5083,7 +5215,7 @@ function attCard(cls,icon,big,lab,go,act){
 function renderDash(d){
   const hr=new Date().getHours();
   const greet=hr<12?'Good morning':(hr<18?'Good afternoon':'Good evening');
-  let h=`<h1>${greet}, ${esc(d.first_name||'')}</h1><div class="hbar"></div>`;
+  let h=`<h1>${greet}, ${esc(d.first_name||'')}</h1><div class="hb"></div>`;
 
   // ---- things that actually need doing (only shown when true) ----
   const cards=[];
@@ -5130,7 +5262,7 @@ function renderDash(d){
 
   // ---- charts ----
   h+='<div class="two">';
-  h+=`<div class="card"><div class="sec-t">My hours – last 8 weeks</div>${barChart(d.weeks)}</div>`;
+  h+=`<div class="card"><div class="sec-t">My hours – last 8 weeks</div>${barChart(d.weeks,d.target)}</div>`;
   if(d.is_mgr && d.by_role && d.by_role.length)
     h+=`<div class="card"><div class="sec-t">Company hours by role (this month)</div>${donut(d.by_role)}</div>`;
   else
@@ -5233,7 +5365,7 @@ async function openFolder(jobId){
   _docCtx={jobId:jobId,mode:'folder'};
   const f=(_folders&&_folders.folders.find(x=>x.id===jobId))||{job_ref:'',job_title:''};
   let h=`<div class="crumbs"><a onclick="nav('dashboard')">Folders</a><span>›</span><b>${esc(f.job_ref||'')}</b></div>`;
-  h+=`<h1 style="font-size:22px">${esc(f.job_ref||'')} <span class="muted" style="font-weight:400;font-size:15px">${esc(f.job_title||'')}</span></h1><div class="hbar"></div>`;
+  h+=`<h1 style="font-size:22px">${esc(f.job_ref||'')} <span class="muted" style="font-weight:400;font-size:15px">${esc(f.job_title||'')}</span></h1><div class="hb"></div>`;
   h+=`<div class="toolbar" style="margin:0 0 14px"><button class="btn sm ghost" onclick="nav('dashboard')">‹ Back to folders</button>
       <button class="btn sm ghost" onclick="renderBilling(${jobId})">Open this job's money</button>
       <button class="btn sm ghost" onclick="API.open_folder('${jsstr(d.folder)}')">Open in Explorer</button></div>`;
@@ -5285,26 +5417,35 @@ function miniSubs(prev){
   if(!prev.length) return '<div class="chart-empty">No submissions yet.</div>';
   return prev.slice(0,6).map(p=>`<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--line)"><span>${esc(p.week)}</span>${badge(p.status)}</div>`).join('');
 }
-function barChart(data){
-  const max=Math.max(1,...data.map(d=>d.hours)); const W=420,H=180,pad=24,bw=(W-pad*2)/data.length;
-  let s=`<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}">`;
-  data.forEach((d,i)=>{ const bh=(H-pad*2)*(d.hours/max); const x=pad+i*bw+6, y=H-pad-bh;
-    s+=`<rect x="${x}" y="${y}" width="${bw-12}" height="${bh}" rx="5" fill="#84c341"></rect>`;
-    s+=`<text x="${x+(bw-12)/2}" y="${H-pad+14}" font-size="10" fill="#7a8089" text-anchor="middle">${esc(d.label)}</text>`;
-    if(d.hours)s+=`<text x="${x+(bw-12)/2}" y="${y-5}" font-size="10" fill="#5e8e1f" text-anchor="middle">${d.hours}</text>`;
-  }); s+='</svg>'; return s;
+function barChart(data,target){
+  const vals=data.map(d=>Number(d.hours)||0); const top=Math.max(1,...vals,target||0); const max=Math.ceil(top/10)*10||10;
+  const W=640,H=210,padL=34,padR=12,padT=18,padB=30,iw=W-padL-padR,ih=H-padT-padB,bw=iw/data.length;
+  const y=v=>padT+ih-(ih*v/max);
+  let s=`<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" class="bars" role="img" aria-label="Hours per week">`;
+  [0,max/2,max].forEach(g=>{ s+=`<line x1="${padL}" x2="${W-padR}" y1="${y(g)}" y2="${y(g)}" stroke="var(--line)" stroke-dasharray="${g?'3 4':'0'}"/><text x="${padL-6}" y="${y(g)+3.5}" font-size="10" fill="var(--mut-2)" text-anchor="end">${g}</text>`; });
+  if(target){ s+=`<line x1="${padL}" x2="${W-padR}" y1="${y(target)}" y2="${y(target)}" stroke="var(--amber)" stroke-width="1.2" stroke-dasharray="5 4"/><text x="${padL+4}" y="${y(target)-5}" font-size="9.5" font-weight="700" fill="var(--amber)">target ${target}h</text>`; }
+  const pts=[];
+  data.forEach((d,i)=>{ const v=vals[i]; const x=padL+i*bw+bw*0.22, w=bw*0.56, yy=y(v), last=i===data.length-1;
+    pts.push([x+w/2,yy]);
+    s+=`<g class="bar" style="animation-delay:${i*45}ms"><rect x="${x}" y="${yy}" width="${w}" height="${Math.max(0,padT+ih-yy)}" rx="4" fill="${last?'var(--green)':'#b9e2a3'}"></rect>`;
+    s+=`<rect x="${padL+i*bw}" y="${padT}" width="${bw}" height="${ih}" fill="transparent"><title>${esc(d.label)}: ${v}h</title></rect>`;
+    s+=`<text x="${x+w/2}" y="${H-padB+15}" font-size="10" fill="var(--mut)" text-anchor="middle">${esc(d.label)}</text>`;
+    if(v) s+=`<text x="${x+w/2}" y="${yy-5}" font-size="10.5" font-weight="700" fill="${last?'var(--green-d)':'var(--mut)'}" text-anchor="middle">${v}</text>`;
+    s+='</g>'; });
+  if(pts.length>1){ s+=`<polyline points="${pts.map(p=>p.join(',')).join(' ')}" fill="none" stroke="var(--green-d)" stroke-width="1.5" stroke-opacity=".55" stroke-linejoin="round" class="trend"/>`; }
+  s+='</svg>'; return s;
 }
 function donut(data){
-  const tot=data.reduce((a,b)=>a+b.value,0)||1; const cx=90,cy=90,r=66,sw=26; let a=-Math.PI/2;
-  const cols=['#84c341','#5e8e1f','#a9d96f','#3f6b13','#c7e8a0','#2c4d0c'];
-  let s=`<svg viewBox="0 0 320 180" width="100%" height="180">`;
+  const tot=data.reduce((a,b)=>a+b.value,0)||1; const cx=90,cy=90,r=66,sw=22; let a=-Math.PI/2;
+  const cols=['#6cc04a','#2f6fd6','#d98c00','#9b59b6','#15a3a3','#e2575b','#7a8a2b','#4f6bed'];
+  let s=`<svg viewBox="0 0 360 180" width="100%" height="180">`;
   data.forEach((d,i)=>{ const frac=d.value/tot, a2=a+frac*2*Math.PI;
     const x1=cx+r*Math.cos(a),y1=cy+r*Math.sin(a),x2=cx+r*Math.cos(a2),y2=cy+r*Math.sin(a2);
     const large=frac>0.5?1:0;
-    s+=`<path d="M ${x1} ${y1} A ${r} ${r} 0 ${large} 1 ${x2} ${y2}" fill="none" stroke="${cols[i%cols.length]}" stroke-width="${sw}"></path>`;
+    s+=`<path d="M ${x1} ${y1} A ${r} ${r} 0 ${large} 1 ${x2} ${y2}" fill="none" stroke="${cols[i%cols.length]}" stroke-width="${sw}" stroke-linecap="butt"><title>${esc(d.label)}: ${d.value}h (${Math.round(frac*100)}%)</title></path>`;
     a=a2; });
-  s+=`<text x="${cx}" y="${cy+5}" font-size="20" font-weight="700" text-anchor="middle" fill="#1b1b22">${Math.round(tot)}h</text>`;
-  data.slice(0,6).forEach((d,i)=>{ s+=`<rect x="195" y="${28+i*22}" width="12" height="12" rx="3" fill="${cols[i%cols.length]}"></rect><text x="214" y="${38+i*22}" font-size="12" fill="#33373e">${esc(d.label)} – ${d.value}h</text>`; });
+  s+=`<text x="${cx}" y="${cy+6}" font-size="21" font-weight="800" text-anchor="middle" fill="var(--ink)">${Math.round(tot)}h</text>`;
+  data.slice(0,6).forEach((d,i)=>{ s+=`<rect x="195" y="${26+i*22}" width="10" height="10" rx="3" fill="${cols[i%cols.length]}"></rect><text x="212" y="${35+i*22}" font-size="11.5" fill="var(--ink)">${esc(String(d.label).length>17?String(d.label).slice(0,16)+'…':d.label)}</text><text x="352" y="${35+i*22}" font-size="11.5" font-weight="700" fill="var(--mut)" text-anchor="end">${d.value}h</text>`; });
   s+='</svg>'; return s;
 }
 async function doApprove(id,st){
@@ -5329,18 +5470,30 @@ E('modalOk').onclick=()=>{if(window._mok)window._mok();};
 let TS=null;
 async function renderTimesheet(weekStart){
   TS=await API.timesheet(weekStart||null);
+  try{ window._mySubs=await API.submissions(); }catch(e){ window._mySubs=[]; }
   window._tjobs=await API.timesheet_jobs(); window._troles=await API.timesheet_roles();
   try{const tm=await API.timer_get(); window._timerStart=(tm&&tm.start_ms)?tm.start_ms:null;}catch(e){}
   drawTimesheet();
 }
+function weekStrip(cur){
+  const st={}; (window._mySubs||[]).forEach(x=>st[x.week_start]=x.status);
+  const today=new Date(); const dow=(today.getDay()+6)%7; const thisMon=new Date(today); thisMon.setDate(today.getDate()-dow);
+  const curD=new Date(cur); const weeks=[]; const start=new Date(Math.min(curD,thisMon)); const endW=new Date(Math.max(curD,thisMon));
+  const first=new Date(endW); first.setDate(first.getDate()-7*7); const from=new Date(Math.min(first,start));
+  for(let w=new Date(from); w<=endW; w.setDate(w.getDate()+7)) weeks.push(new Date(w));
+  const iso=x=>{const z=new Date(x); z.setMinutes(z.getMinutes()-z.getTimezoneOffset()); return z.toISOString().slice(0,10);};
+  const lab=x=>x.toLocaleDateString('en-GB',{day:'numeric',month:'short'});
+  return `<div class="wk-strip">${weeks.slice(-8).map(w=>{const k=iso(w); const s=st[k]||''; const cls=(k===cur?' on':'')+(k===iso(thisMon)?' now':'')+(s?' s-'+s:' s-none');
+    return `<button class="wk${cls}" onclick="renderTimesheet('${k}')" title="w/c ${lab(w)}${s?' · '+s:''}"><span class="wk-d"></span>${lab(w)}</button>`;}).join('')}</div>`;
+}
 function weekShift(n){const w=new Date(TS.week_start);w.setDate(w.getDate()+n);renderTimesheet(w.toISOString().slice(0,10));}
 function drawTimesheet(){
   const d=TS; let h=head('My Timesheet');
-  h+=`<div class="ts-top"><button class="btn sm ghost" onclick="weekShift(-7)">‹ Prev</button>
+  h+=`<div class="ts-top"><button class="btn sm ghost" onclick="weekShift(-7)" title="Previous week">‹</button>
     <span class="ts-week">${esc(d.week)}</span>
-    <button class="btn sm ghost" onclick="weekShift(7)">Next ›</button>
+    <button class="btn sm ghost" onclick="weekShift(7)" title="Next week">›</button>
     <button class="btn sm ghost" onclick="renderTimesheet()">This week</button>
-    <span style="margin-left:auto">${badge(d.status)}</span></div>`;
+    <span style="margin-left:auto">${badge(d.status)}</span></div>`+weekStrip(d.week_start);
   if(d.status==='Rejected'&&d.reject_reason) h+=`<div class="card" style="border-left:4px solid #d23a3a;color:#b21d36;margin-bottom:12px">Rejected: ${esc(d.reject_reason)}</div>`;
   if(d.editable){const running=!!window._timerStart;
     h+=`<div class="timer-bar"><span class="timer-lbl">TIMER</span>
@@ -5572,7 +5725,7 @@ let _users=[];
 async function renderUsers(){
   _users=await API.users();
   let h=head('Users','Set each person\'s standard charge rate here - it applies to every job unless you override it per job under Job Costs.')+'<div class="card" style="padding:6px 8px"><table><thead><tr><th>Name</th><th>Email</th><th>Job Role</th><th>User Type</th><th class="tnum">Rate (£/hr)</th><th>Active</th><th></th></tr></thead><tbody>';
-  _users.forEach(u=>h+=`<tr><td>${esc(u.name)}</td><td>${esc(u.email)}</td><td>${esc(u.role)}</td><td>${esc(u.type)}</td><td class="tnum">${u.rate?'£'+Number(u.rate).toFixed(2):'—'}</td><td>${u.active?'Yes':'No'}</td>
+  _users.forEach(u=>h+=`<tr><td>${person(u.name)}</td><td class="muted">${esc(u.email)}</td><td>${esc(u.role)}</td><td>${esc(u.type)}</td><td class="tnum">${u.rate?money(u.rate):'—'}</td><td>${u.active?'Yes':'No'}</td>
     <td style="text-align:right"><button class="btn sm ghost" onclick="userModal(${u.id})">Edit</button>
       <button class="btn sm ghost" onclick="resetPw(${u.id})">Reset pw</button>
       <button class="btn sm ghost" onclick="delUser(${u.id})">Delete</button></td></tr>`);
@@ -5633,7 +5786,7 @@ function drawJobs(){
     +'<div class="card" style="padding:6px 8px"><table><thead><tr><th>Job Ref</th><th>Title</th><th>Client</th><th>Type</th><th>Status</th><th class="tnum">Quote (£)</th><th></th></tr></thead><tbody>';
   if(!list.length)h+=`<tr><td colspan="7" class="muted">No ${_jobStatus==='All'?'':_jobStatus.toLowerCase()+' '}job references${_jobStatus==='Closed'?' — nothing has been closed yet.':'.'}</td></tr>`;
   list.forEach(j=>{const doc=j.quote_att?` <button class="btn sm ghost" title="Open the quote document" onclick="event.stopPropagation();openAtt('${jsstr(j.quote_att_path)}')">📎</button>`:'';
-    h+=`<tr class="jobrow" data-job="${j.id}" title="Drop a quote document here to attach it"><td>${esc(j.ref)}</td><td>${esc(j.title)}</td><td>${esc(j.client)}</td><td>${esc(j.type)}</td><td>${badge(j.status)}</td><td class="tnum">${j.quote?'£'+Number(j.quote).toFixed(2):'—'}${doc}</td>
+    h+=`<tr class="jobrow" data-job="${j.id}" title="Drop a quote document here to attach it"><td>${esc(j.ref)}</td><td>${esc(j.title)}</td><td>${esc(j.client)}</td><td>${esc(j.type)}</td><td>${badge(j.status)}</td><td class="tnum">${j.quote?moneyS(j.quote):'—'}${doc}</td>
     <td style="text-align:right"><button class="btn sm ghost" onclick="jobModal(${j.id})">Edit</button><button class="btn sm ghost" onclick="delJob(${j.id})">Delete</button></td></tr>`;});
   h+='</tbody></table></div><div class="toolbar"><button class="btn sm" onclick="jobModal(0)">Add job</button><span class="muted" style="align-self:center;margin-left:8px">Tip: drag a quote PDF onto a job row to attach it.</span></div>';
   E('main').innerHTML=h;
@@ -5842,7 +5995,8 @@ function drpApply(){
   drpClose();
   if(cb)cb();
 }
-function money(v){return '£'+Number(v||0).toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2});}
+function money(v){const n=Number(v||0);return (n<0?'−£':'£')+Math.abs(n).toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2});}
+function moneyS(v){const n=Number(v||0);const whole=Math.abs(n)%1===0;return (n<0?'−£':'£')+Math.abs(n).toLocaleString('en-GB',{minimumFractionDigits:whole?0:2,maximumFractionDigits:2});}
 function money0(v){return '£'+Math.round(Number(v||0)).toLocaleString('en-GB');}
 let _jcRows=[],_jcStatus='Active';
 async function renderJobCosts(){
@@ -5874,7 +6028,7 @@ function drawJobCosts(){
     const cpi=d.pct_cost_of_invoiced||0;
     const ccls=cpi>100?'over':(cpi>=85?'warn':'');
     const bar=d.invoiced
-      ? `<div class="bar-wrap" title="Cost £${(d.total_cost||0).toFixed(2)} against invoiced £${(d.invoiced||0).toFixed(2)}"><div class="bar-fill ${ccls}" style="width:${Math.min(100,cpi)}%"></div></div> <span class="muted">${cpi}%</span>${q?`<div class="muted" style="font-size:11px">${pct}% of quote spent</div>`:''}`
+      ? `<div class="bar-wrap" title="Cost ${money(d.total_cost||0)} against invoiced ${money(d.invoiced||0)}"><div class="bar-fill ${ccls}" style="width:${Math.min(100,cpi)}%"></div></div> <span class="muted">${cpi}%</span>${q?`<div class="muted" style="font-size:11px">${pct}% of quote spent</div>`:''}`
       : (q?`<span class="muted">not billed yet</span><div class="muted" style="font-size:11px">${pct}% of quote spent</div>`:'<span class="muted">—</span>');
     const qc=q?money(q):'—';
     const qsub=d.variations?`<div class="muted" style="font-size:11px">${money0(d.quote)} + ${money0(d.variations)} var</div>`:'';
@@ -6384,7 +6538,7 @@ async function delInvoice(iid){
 async function ratesModal(jobId,ref){
   const list=await API.rates_for_job(jobId);
   let b=`<div class="muted" style="margin-bottom:4px">£/hour for each person on ${esc(ref)}. Leave blank to use the person's standard rate.</div>`;
-  list.forEach(u=>{const hint=u.default?`standard £${Number(u.default).toFixed(2)}`:'no standard rate set';
+  list.forEach(u=>{const hint=u.default?`standard ${money(u.default)}`:'no standard rate set';
     b+=`<label>${esc(u.name)} <span class="muted">(${esc(u.role)})</span></label><input id="rate_${u.id}" type="number" step="0.01" min="0" value="${u.rate||''}" placeholder="${hint}">`;});
   openModal('Set rates',b,()=>saveRates(jobId,list));
 }
@@ -6472,85 +6626,106 @@ async function renderAnalytics(){
   _anFrom=_anFrom||first; _anTo=_anTo||tod;
   const a=await API.analytics(_anFrom,_anTo);
   if(a&&a.error){E('main').innerHTML=head('Analytics',a.error);return;}
-  let h=head('Analytics','Utilisation, profit leakage, job budgets, overtime &amp; expenses.');
-  h+=`<div class="toolbar" style="margin:0 0 14px">
-    <label class="muted" style="align-self:center">Dates</label>
-    <input id="an_from" class="dateinput" value="${_anFrom}" readonly onclick="openRange('an_from','an_to')" title="Click to pick a date range">
-    <span class="muted" style="align-self:center">to</span>
-    <input id="an_to" class="dateinput" value="${_anTo}" readonly onclick="openRange('an_from','an_to')" title="Click to pick a date range">
-    <button class="btn sm" onclick="_anFrom=E('an_from').value;_anTo=E('an_to').value;renderAnalytics()">Apply</button>
-    <span class="muted" style="align-self:center;margin-left:6px">${esc(a.period.label)}</span></div>`;
+  const g=a.goals||{}; const isAdmin=USER.user_type==='Admin';
+  const preset=(k)=>{const t=new Date(); let f; if(k==='30'){f=new Date(t-30*864e5);} else if(k==='90'){f=new Date(t-90*864e5);} else if(k==='m'){f=new Date(t.getFullYear(),t.getMonth(),1);} else if(k==='q'){f=new Date(t.getFullYear(),Math.floor(t.getMonth()/3)*3,1);} else {f=new Date(t.getFullYear(),0,1);} return f.toISOString().slice(0,10);};
+  const curKey=(()=>{for(const k of ['30','90','m','q','y']) if(preset(k)===_anFrom&&_anTo===tod) return k; return '';})();
+  let h=head('Analytics','How the company is doing against its goals: utilisation, money, overtime and discipline on timesheets.');
+  h+=`<div class="an-top">
+    <div class="seg">${[['30','30 days'],['90','90 days'],['m','This month'],['q','This quarter'],['y','This year']].map(([k,l])=>`<button class="${curKey===k?'on':''}" onclick="_anFrom='${preset(k)}';_anTo='${tod}';renderAnalytics()">${l}</button>`).join('')}</div>
+    <div class="an-range"><input id="an_from" class="dateinput" value="${_anFrom}" readonly onclick="openRange('an_from','an_to')"><span class="muted">to</span><input id="an_to" class="dateinput" value="${_anTo}" readonly onclick="openRange('an_from','an_to')"><button class="btn sm ghost" onclick="_anFrom=E('an_from').value;_anTo=E('an_to').value;renderAnalytics()">Apply</button></div>
+  </div>`;
 
-  // KPI cards
-  h+='<div class="grid kpis" style="margin-bottom:18px">'+
-     kpi('Company utilisation',a.util.company_pct+'%')+
-     kpi('Billable hrs',a.util.billable,1)+
-     kpi('Overtime cost','£'+a.overtime.total_cost.toFixed(0))+
-     kpi('Expenses outstanding','£'+a.expenses.outstanding.toFixed(0))+'</div>';
-
-  // Utilisation
-  h+='<div class="card" style="margin-bottom:16px"><div class="sec-t">Utilisation — billable vs non-billable</div>';
-  h+='<table><thead><tr><th>Person</th><th class="tnum">Billable</th><th class="tnum">Non-bill</th><th style="width:34%">Split</th><th class="tnum">%</th></tr></thead><tbody>';
-  if(!a.util.rows.length)h+='<tr><td colspan="5" class="muted">No hours in this period.</td></tr>';
-  a.util.rows.forEach(r=>h+=`<tr><td>${esc(r.name)}</td><td class="tnum">${r.billable}</td><td class="tnum">${r.nonbill}</td><td>${_stk(r.billable,r.nonbill)}</td><td class="tnum"><b>${r.pct}%</b></td></tr>`);
-  h+='</tbody></table><div class="sub" style="margin-top:6px">Billable = Project jobs · Non-billable = Overhead / Holiday.</div></div>';
-
-  // Profit leakage (per person + per job)
-  h+='<div class="grid2"><div class="card"><div class="sec-t">Profit leakage — by person</div>';
-  h+='<table><thead><tr><th>Person</th><th class="tnum">Submitted</th><th class="tnum">Adjusted</th><th class="tnum">Diff</th></tr></thead><tbody>';
-  if(!a.leak_person.length)h+='<tr><td colspan="4" class="muted">No data.</td></tr>';
-  a.leak_person.forEach(r=>h+=`<tr><td>${esc(r.name)}</td><td class="tnum">${r.submitted}</td><td class="tnum">${r.adjusted}</td><td class="tnum">${diffc(r.diff)}</td></tr>`);
-  h+='</tbody></table></div>';
-  h+='<div class="card"><div class="sec-t">Profit leakage — by job</div>';
-  h+='<table><thead><tr><th>Job</th><th class="tnum">Sub.</th><th class="tnum">Adj.</th><th class="tnum">Diff</th></tr></thead><tbody>';
-  if(!a.leak_job.length)h+='<tr><td colspan="4" class="muted">No data.</td></tr>';
-  a.leak_job.slice(0,12).forEach(r=>h+=`<tr><td title="${esc(r.job_title)}">${esc(r.job_ref)}</td><td class="tnum">${r.submitted}</td><td class="tnum">${r.adjusted}</td><td class="tnum">${diffc(r.diff)}</td></tr>`);
-  h+='</tbody></table></div></div>';
-  h+='<div class="sub" style="margin:6px 0 16px">Diff = adjusted (billed) minus submitted (actual). Positive = hours added; negative = hours cut.</div>';
-
-  // Portfolio health
-  h+='<div class="card" style="margin-bottom:16px"><div class="sec-t">Job portfolio health (budget vs quote)</div>';
-  h+='<table><thead><tr><th>Job</th><th class="tnum">Quote</th><th class="tnum">Cost</th><th class="tnum">Remaining</th><th style="width:24%">Used</th><th></th></tr></thead><tbody>';
-  if(!a.portfolio.length)h+='<tr><td colspan="6" class="muted">No quoted projects yet.</td></tr>';
-  a.portfolio.forEach(d=>{const cls=d.flag==='over'?'over':(d.flag==='warn'?'warn':'');
-    h+=`<tr><td title="${esc(d.job_title)}">${esc(d.job_ref)}</td><td class="tnum">£${d.quote.toFixed(0)}</td><td class="tnum">£${d.cost.toFixed(0)}</td><td class="tnum">£${d.remaining.toFixed(0)}</td>
-    <td><div class="bar-wrap"><div class="bar-fill ${cls}" style="width:${Math.min(100,d.pct)}%"></div></div> <span class="muted">${d.pct}%</span></td>
-    <td>${d.flag==='over'?'<span class="pill" style="background:#fbe0e0;color:#b22">OVER</span>':(d.flag==='warn'?'<span class="pill" style="background:#fdeecf;color:#9a6a00">80%+</span>':'')}</td></tr>`;});
-  h+='</tbody></table></div>';
-
-  // Overtime + Expenses
-  h+='<div class="grid2"><div class="card"><div class="sec-t">Overtime — by person</div>';
-  h+='<table><thead><tr><th>Person</th><th class="tnum">OT hours</th><th class="tnum">Extra £</th></tr></thead><tbody>';
-  if(!a.overtime.rows.length)h+='<tr><td colspan="3" class="muted">No overtime in this period.</td></tr>';
-  a.overtime.rows.forEach(r=>h+=`<tr><td>${esc(r.name)}</td><td class="tnum">${r.hours}</td><td class="tnum">£${r.cost.toFixed(0)}</td></tr>`);
-  h+=`</tbody><tfoot><tr><td><b>Total</b></td><td class="tnum"><b>${a.overtime.total_hours}</b></td><td class="tnum"><b>£${a.overtime.total_cost.toFixed(0)}</b></td></tr></tfoot></table></div>`;
-  h+='<div class="card"><div class="sec-t">Expenses — by job (this period)</div>';
-  h+='<table><thead><tr><th>Job</th><th class="tnum">Value</th></tr></thead><tbody>';
-  if(!a.expenses.by_job.length)h+='<tr><td colspan="2" class="muted">No expenses in this period.</td></tr>';
-  a.expenses.by_job.forEach(r=>h+=`<tr><td>${esc(r.job)}</td><td class="tnum">£${r.value.toFixed(2)}</td></tr>`);
-  h+=`</tbody><tfoot><tr><td><b>Period total</b></td><td class="tnum"><b>£${a.expenses.period_total.toFixed(2)}</b></td></tr></tfoot></table>
-     <div class="sub" style="margin-top:6px">Outstanding (all unpaid): <b>£${a.expenses.outstanding.toFixed(2)}</b></div></div></div>`;
-
-  // Top jobs ranking (by value if charge rates set, otherwise by hours)
-  const byHours=(a.top_metric==='hours');
-  h+='<div class="card" style="margin-top:16px"><div class="sec-t">Top jobs '+(byHours?'by hours logged':'by value')+'</div>';
-  if(!a.top_jobs||!a.top_jobs.length){h+='<div class="muted">No hours logged to jobs yet.</div>';}
-  else{const mx=Math.max.apply(null,a.top_jobs.map(j=>byHours?j.hours:j.cost).concat([1]));
-    a.top_jobs.forEach((j,i)=>{const val=byHours?j.hours:j.cost; const w=Math.round(val/mx*100);
-      const medal=['#e9b949','#c2cad3','#cd8a4c'][i]||'#e8eef3';
-      const rt=byHours?`${j.hours}h`:`£${j.cost.toFixed(0)}${j.quote?` &middot; ${j.pct}% of quote`:''}`;
-      h+=`<div class="rankrow" style="animation-delay:${i*0.05}s">
-        <div class="rankno" style="background:${medal}">${i+1}</div>
-        <div style="flex:1;min-width:0">
-          <div style="display:flex;justify-content:space-between;gap:8px">
-            <b>${esc(j.job_ref)}</b>
-            <span class="muted" style="white-space:nowrap">${rt}</span></div>
-          <div class="rankbar"><div class="rankbar-f" style="width:${w}%;animation-delay:${i*0.05}s"></div></div>
-          <div class="sub" style="margin-top:2px">${esc(j.job_title)}${byHours?'':` &middot; ${j.hours}h`}</div></div></div>`;});}
-  if(byHours)h+='<div class="sub" style="margin-top:8px">Ranked by hours - set charge rates on jobs to rank by £ value.</div>';
+  // ---- goals ----
+  const months=a.period.months||1;
+  const invPerMonth=a.money.invoiced/months, otPerMonth=a.overtime.total_hours/months;
+  const goals=[
+    {k:'utilisation_pct',lab:'Utilisation',val:a.util.company_pct,goal:g.utilisation_pct,fmt:v=>v.toFixed(1)+'%',sub:`${a.util.billable}h billable of ${(a.util.billable+a.util.nonbill).toFixed(0)}h`},
+    {k:'monthly_invoiced',lab:'Invoiced per month',val:invPerMonth,goal:g.monthly_invoiced,fmt:v=>moneyS(Math.round(v)),sub:`${moneyS(Math.round(a.money.invoiced))} in period · ${moneyS(Math.round(a.money.invoiced_unpaid))} unpaid`},
+    {k:'submission_pct',lab:'Timesheets on time',val:a.submission_rate,goal:g.submission_pct,fmt:v=>v.toFixed(0)+'%',sub:`${a.people} active people`},
+    {k:'overtime_cap',lab:'Overtime per month',val:otPerMonth,goal:g.overtime_cap,fmt:v=>v.toFixed(0)+'h',sub:`${moneyS(Math.round(a.overtime.total_cost))} overtime cost in period`,lower:true},
+  ];
+  h+=`<div class="sec-h" style="display:flex;align-items:center;gap:10px">Goals${isAdmin?`<button class="btn xs ghost" style="margin-left:auto" onclick="goalsModal()">Set goals</button>`:''}</div><div class="goal-grid">`;
+  goals.forEach(x=>{ const goal=Number(x.goal)||0; let p=goal?(x.lower?Math.min(1,x.val/goal):Math.min(1,x.val/goal)):0; const hit=x.lower?(x.val<=goal):(x.val>=goal);
+    const tone=x.lower?(x.val>goal?'bad':(p>0.85?'warn':'ok')):(hit?'ok':(p>=0.7?'warn':'bad')); const togo=x.lower?(hit?`${x.fmt(goal-x.val)} under the cap`:`${x.fmt(x.val-goal)} over the cap`):(hit?'Goal reached':`${x.fmt(goal-x.val)} to go`);
+    h+=`<div class="card goal ${tone}">${ring(x.lower?Math.min(1,goal?x.val/goal:0):p,tone)}<div class="goal-b"><div class="lab">${esc(x.lab)}</div><div class="val">${x.fmt(x.val)}</div><div class="goal-t">${x.lower?'Cap':'Goal'} ${x.fmt(goal)} · <b>${togo}</b></div><div class="goal-s">${esc(x.sub)}</div></div></div>`; });
   h+='</div>';
 
+  // ---- headline numbers ----
+  h+='<div class="grid kpis" style="margin:18px 0;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">'+
+     kpi('Billable hours',a.util.billable,1)+kpi('Non-billable',a.util.nonbill)+
+     kpi('Invoiced',moneyS(Math.round(a.money.invoiced)))+kpi('Supplier bills',moneyS(Math.round(a.money.bills)))+
+     kpi('Overtime cost',moneyS(Math.round(a.overtime.total_cost)))+kpi('Expenses',moneyS(Math.round(a.expenses.period_total)))+'</div>';
+
+  // ---- weekly trend ----
+  h+=`<div class="card" style="margin-bottom:14px"><div class="sec-t" style="display:flex;align-items:center">Hours per week<span class="legend"><i style="background:var(--green)"></i>Billable<i style="background:#cfd4dc"></i>Non-billable<i style="background:var(--amber);height:2px;width:14px;border-radius:1px"></i>Overtime</span></div>${stackChart(a.weekly)}</div>`;
+
+  // ---- utilisation by person + portfolio ----
+  const rows=a.util.rows.slice().sort((x,y)=>y.pct-x.pct||y.billable-x.billable);
+  h+='<div class="grid2"><div class="card"><div class="sec-t">Utilisation by person</div><div class="hbars">';
+  if(!rows.length)h+='<div class="muted">No hours in this period.</div>';
+  rows.forEach((r,i)=>{const t=r.billable+r.nonbill; h+=`<div class="hrow${i>=10?' more hidden':''}"><span class="hname">${person(r.name,22)}</span><span class="hb"><i style="width:${r.pct}%;background:${r.pct>=g.utilisation_pct?'var(--green)':r.pct>=g.utilisation_pct*0.85?'var(--amber)':'var(--red)'}"></i></span><span class="hv">${r.pct}%</span><span class="hh muted">${t}h</span></div>`;});
+  if(rows.length>10)h+=`<button class="btn xs ghost" style="margin-top:8px" onclick="[...this.parentNode.querySelectorAll('.more')].forEach(e=>e.classList.toggle('hidden'));this.textContent=this.textContent.startsWith('Show')?'Show fewer':'Show all ${rows.length}'">Show all ${rows.length}</button>`;
+  h+=`</div><div class="sub" style="margin:10px 0 0">Billable = project jobs. Goal line ${g.utilisation_pct}%.</div></div>`;
+  h+='<div class="card"><div class="sec-t">Job budgets — cost against quote</div><div class="hbars">';
+  if(!a.portfolio.length)h+='<div class="muted">No quoted projects yet.</div>';
+  a.portfolio.slice(0,10).forEach(d=>{const col=d.flag==='over'?'var(--red)':(d.flag==='warn'?'var(--amber)':'var(--green)');
+    h+=`<div class="hrow" title="${esc(d.job_title)}"><span class="hname"><b>${esc(d.job_ref)}</b><span class="muted" style="margin-left:6px;font-size:11.5px">${esc(d.job_title.slice(0,26))}${d.job_title.length>26?'…':''}</span></span><span class="hb"><i style="width:${Math.min(100,d.pct)}%;background:${col}"></i></span><span class="hv" style="color:${col}">${d.pct}%</span><span class="hh muted">${moneyS(Math.round(d.remaining))} left</span></div>`;});
+  h+='</div><div class="sub" style="margin:10px 0 0">Green under 80% · amber 80–100% · red over the quote.</div></div></div>';
+
+  // ---- top jobs + expenses ----
+  h+='<div class="grid2" style="margin-top:14px"><div class="card"><div class="sec-t">Biggest jobs by '+(a.top_metric==='cost'?'labour cost':'hours')+'</div>';
+  const maxv=Math.max(1,...a.top_jobs.map(j=>a.top_metric==='cost'?j.cost:j.hours));
+  a.top_jobs.forEach((j,i)=>{const v=a.top_metric==='cost'?j.cost:j.hours; h+=`<div class="rankrow"><div class="rankno">${i+1}</div><div style="flex:1;min-width:0"><div style="display:flex;justify-content:space-between;gap:10px"><b>${esc(j.job_ref)}</b><span class="tnum">${a.top_metric==='cost'?moneyS(Math.round(v)):v+'h'}</span></div><div class="muted" style="font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(j.job_title)}</div><div class="rankbar"><div class="rankbar-f" style="width:${Math.round(v/maxv*100)}%"></div></div></div></div>`;});
+  if(!a.top_jobs.length)h+='<div class="muted">Nothing logged yet.</div>';
+  h+='</div><div class="card"><div class="sec-t">Expenses by job</div>';
+  const emax=Math.max(1,...a.expenses.by_job.map(r=>r.value));
+  if(!a.expenses.by_job.length)h+='<div class="muted">No expenses in this period.</div>';
+  h+='<div class="hbars">'+a.expenses.by_job.slice(0,10).map(r=>`<div class="hrow"><span class="hname">${esc(r.job)}</span><span class="hb"><i style="width:${Math.round(r.value/emax*100)}%;background:var(--blue)"></i></span><span class="hv">${money(r.value)}</span></div>`).join('')+'</div>';
+  h+=`<div class="sub" style="margin:10px 0 0">${money(a.expenses.period_total)} in period · ${money(a.expenses.outstanding)} still to reimburse.</div></div></div>`;
+
+  // ---- leakage (detail) ----
+  h+='<details class="card an-details" style="margin-top:14px"><summary><span class="sec-t" style="margin:0">Profit leakage — submitted vs adjusted hours</span><span class="muted" style="font-size:12px">Hours changed by managers after submission. Positive = added, negative = cut.</span></summary><div class="grid2" style="margin-top:14px">';
+  h+='<div><table><thead><tr><th>Person</th><th class="tnum">Submitted</th><th class="tnum">Adjusted</th><th class="tnum">Diff</th></tr></thead><tbody>';
+  if(!a.leak_person.length)h+='<tr><td colspan="4" class="muted">No data.</td></tr>';
+  a.leak_person.forEach(r=>h+=`<tr><td>${person(r.name,22)}</td><td class="tnum">${r.submitted}</td><td class="tnum">${r.adjusted}</td><td class="tnum">${diffc(r.diff)}</td></tr>`);
+  h+='</tbody></table></div><div><table><thead><tr><th>Job</th><th class="tnum">Sub.</th><th class="tnum">Adj.</th><th class="tnum">Diff</th></tr></thead><tbody>';
+  if(!a.leak_job.length)h+='<tr><td colspan="4" class="muted">No data.</td></tr>';
+  a.leak_job.slice(0,12).forEach(r=>h+=`<tr><td title="${esc(r.job_title)}">${esc(r.job_ref)}</td><td class="tnum">${r.submitted}</td><td class="tnum">${r.adjusted}</td><td class="tnum">${diffc(r.diff)}</td></tr>`);
+  h+='</tbody></table></div></div></details>';
+  // ---- overtime (detail) ----
+  h+='<details class="card an-details" style="margin-top:14px"><summary><span class="sec-t" style="margin:0">Overtime by person</span><span class="muted" style="font-size:12px">'+a.overtime.total_hours+'h · '+moneyS(Math.round(a.overtime.total_cost))+' premium</span></summary>';
+  h+='<table style="margin-top:12px"><thead><tr><th>Person</th><th class="tnum">OT hours</th><th class="tnum">Premium cost</th></tr></thead><tbody>';
+  if(!a.overtime.rows.length)h+='<tr><td colspan="3" class="muted">No overtime in this period.</td></tr>';
+  a.overtime.rows.forEach(r=>h+=`<tr><td>${person(r.name,22)}</td><td class="tnum">${r.hours}</td><td class="tnum">${money(r.cost)}</td></tr>`);
+  h+='</tbody></table></details>';
   E('main').innerHTML=h;
+}
+function ring(p,tone){ const r=26,c=2*Math.PI*r; p=Math.max(0,Math.min(1,p||0)); const col=tone==='ok'?'var(--green)':tone==='warn'?'var(--amber)':'var(--red)';
+  return `<svg class="ring" viewBox="0 0 64 64" width="64" height="64"><circle cx="32" cy="32" r="${r}" fill="none" stroke="var(--line)" stroke-width="7"/><circle cx="32" cy="32" r="${r}" fill="none" stroke="${col}" stroke-width="7" stroke-linecap="round" stroke-dasharray="${c}" stroke-dashoffset="${c*(1-p)}" transform="rotate(-90 32 32)" style="--c:${c};--o:${c*(1-p)}"/><text x="32" y="36" text-anchor="middle" font-size="12" font-weight="800" fill="var(--ink)">${Math.round(p*100)}%</text></svg>`; }
+function stackChart(weeks){
+  if(!weeks||!weeks.length) return '<div class="chart-empty">No hours in this period.</div>';
+  const W=1080,H=230,padL=36,padR=10,padT=16,padB=28,iw=W-padL-padR,ih=H-padT-padB,bw=iw/weeks.length;
+  const tops=weeks.map(w=>w.billable+w.nonbill); const max=Math.max(10,Math.ceil(Math.max(...tops)/50)*50);
+  const y=v=>padT+ih-ih*v/max; const step=Math.max(1,Math.ceil(weeks.length/10));
+  let s=`<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" class="bars" role="img" aria-label="Hours per week">`;
+  [0,max/2,max].forEach(gv=>{ s+=`<line x1="${padL}" x2="${W-padR}" y1="${y(gv)}" y2="${y(gv)}" stroke="var(--line)" stroke-dasharray="${gv?'3 4':'0'}"/><text x="${padL-6}" y="${y(gv)+3.5}" font-size="10" fill="var(--mut-2)" text-anchor="end">${gv}</text>`; });
+  const pts=[];
+  weeks.forEach((w,i)=>{ const x=padL+i*bw+bw*0.18, bwid=bw*0.64; const yb=y(w.billable), yt=y(w.billable+w.nonbill);
+    s+=`<g class="bar" style="animation-delay:${i*30}ms"><rect x="${x}" y="${yb}" width="${bwid}" height="${Math.max(0,padT+ih-yb)}" rx="3" fill="var(--green)"/><rect x="${x}" y="${yt}" width="${bwid}" height="${Math.max(0,yb-yt)}" rx="3" fill="#cfd4dc"/><rect x="${padL+i*bw}" y="${padT}" width="${bw}" height="${ih}" fill="transparent"><title>w/c ${w.label}: ${w.billable}h billable, ${w.nonbill}h non-billable, ${w.overtime}h overtime</title></rect>`;
+    if(i%step===0) s+=`<text x="${x+bwid/2}" y="${H-padB+15}" font-size="10" fill="var(--mut)" text-anchor="middle">${esc(w.label)}</text>`;
+    s+='</g>'; pts.push([x+bwid/2,y(w.overtime)]); });
+  s+=`<polyline class="trend" points="${pts.map(p=>p.join(',')).join(' ')}" fill="none" stroke="var(--amber)" stroke-width="2" stroke-linejoin="round"/>`;
+  pts.forEach(p=>{ s+=`<circle cx="${p[0]}" cy="${p[1]}" r="2.5" fill="#fff" stroke="var(--amber)" stroke-width="1.5"/>`; });
+  return s+'</svg>';
+}
+async function goalsModal(){
+  const g=await API.get_goals();
+  openModal('Company goals',`<label>Utilisation goal (% of hours billable)</label><input id="g_u" type="number" step="1" min="0" max="100" value="${g.utilisation_pct}">
+    <label>Invoiced per month (£)</label><input id="g_i" type="number" step="1000" min="0" value="${g.monthly_invoiced}">
+    <label>Timesheets submitted on time (%)</label><input id="g_s" type="number" step="1" min="0" max="100" value="${g.submission_pct}">
+    <label>Overtime cap per month (hours)</label><input id="g_o" type="number" step="5" min="0" value="${g.overtime_cap}">
+    <div class="muted" style="font-size:12px;margin-top:10px">Shown to managers on the Analytics page. Change them any time.</div>`,
+    async()=>{ const r=await API.save_goals({utilisation_pct:E('g_u').value,monthly_invoiced:E('g_i').value,submission_pct:E('g_s').value,overtime_cap:E('g_o').value}); if(!r||!r.ok){alert((r&&r.error)||'Could not save');return;} closeModal(); toast('Goals saved'); renderAnalytics(); });
 }
 function diffc(v){const c=v>0?'#1d8f3b':(v<0?'#c0392b':'#888');const s=v>0?'+':'';return `<span style="color:${c};font-weight:600">${s}${v}</span>`;}
 
@@ -6626,7 +6801,7 @@ function drawApprovals(){
     if(s==='Approved'){ acts+=` <button class="btn sm ghost" onclick="doReject(${r.id})">Send back</button>`;
                         acts+=` <button class="btn sm ghost" onclick="doApprove(${r.id},'Locked')">Lock</button>`; }
     if(s==='Locked') acts+=` <button class="btn sm ghost" onclick="doApprove(${r.id},'Approved')">Unlock</button>`;
-    h+=`<tr><td>${esc(r.name)}</td><td>${esc(r.role)}</td><td>${esc(r.week)}</td><td>${badge(r.status)}</td><td class="tnum">${r.hours}</td><td class="muted">${esc(r.reason||'')}</td><td style="white-space:nowrap">${acts}</td></tr>`;});
+    h+=`<tr><td>${person(r.name)}</td><td class="muted">${esc(r.role)}</td><td>${esc(r.week)}</td><td>${badge(r.status)}</td><td class="tnum">${r.hours}</td><td class="muted">${esc(r.reason||'')}</td><td style="white-space:nowrap">${acts}</td></tr>`;});
   h+='</tbody></table></div>';
   E('main').innerHTML=h;
 }
@@ -6784,7 +6959,7 @@ function drawAllTs(){
     +th('name','Name')+th('role','Role')+th('week','Week')+th('status','Status')
     +th('hours','Hours','tnum')+'<th>Action</th></tr></thead><tbody>';
   if(!rows.length)h+='<tr><td colspan="6" class="muted">No timesheets found.</td></tr>';
-  rows.forEach(r=>h+=`<tr><td>${esc(r.name)}</td><td>${esc(r.role)}</td><td>${esc(r.week)}</td><td>${badge(r.status)}</td><td class="tnum">${r.hours}</td><td><button class="btn sm ghost" onclick="viewDetail(${r.id},'${_atBasis}')">View</button></td></tr>`);
+  rows.forEach(r=>h+=`<tr><td>${person(r.name)}</td><td class="muted">${esc(r.role)}</td><td>${esc(r.week)}</td><td>${badge(r.status)}</td><td class="tnum">${r.hours}</td><td><button class="btn sm ghost" onclick="viewDetail(${r.id},'${_atBasis}')">View</button></td></tr>`);
   h+='</tbody></table></div>';
   E('main').innerHTML=h;
 }
