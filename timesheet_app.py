@@ -4639,6 +4639,7 @@ tr.lrow.sel td{background:var(--green-soft)}
 tr.lrow.sel td:first-child{box-shadow:inset 3px 0 0 var(--green)}
 tr.jobrow.dragover td{background:#f1f9ea;box-shadow:inset 0 0 0 1px var(--green)}
 .xdel{background:none;color:var(--red);font-size:13px;padding:0 4px;border:0;cursor:pointer;opacity:.7}.xdel:hover{opacity:1}
+.xedit{background:none;color:var(--mut);font-size:13px;padding:0 4px;border:0;cursor:pointer;opacity:.6}.xedit:hover{opacity:1;color:var(--ink)}
 
 /* ---------- badges / pills ---------- */
 .badge{display:inline-flex;align-items:center;gap:6px;padding:3px 9px 3px 8px;border-radius:999px;font-size:11.5px;font-weight:700;letter-spacing:.01em;white-space:nowrap}
@@ -4918,6 +4919,52 @@ input,select,textarea{transition:border-color .15s ease,box-shadow .15s ease}
 @keyframes popIn{from{opacity:0;transform:scale(.98)}to{opacity:1;transform:scale(1)}}
 .modal-bg{animation:fadeIn .16s ease}.modal{animation:popIn .2s ease}.lcard{animation:popIn .3s ease}
 @keyframes popIn{from{opacity:0;transform:scale(.97) translateY(4px)}to{opacity:1;transform:none}}
+/* ---------- phone ---------- */
+.topbar,.scrim{display:none}
+@media(max-width:760px){
+  #app{flex-direction:column;height:100dvh}
+  .topbar{display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--side);color:#fff;flex:0 0 auto;z-index:40;border-bottom:1px solid #1d212b}
+  .tb-brand{font-weight:800;font-size:15px;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:-.01em}
+  .burger{background:transparent;border:1px solid #2a2f3a;border-radius:9px;width:40px;height:38px;display:inline-flex;align-items:center;justify-content:center;color:#fff;padding:0;cursor:pointer}
+  .burger:active{background:var(--side-2)}
+  .side{position:fixed;top:0;left:0;bottom:0;width:min(300px,84vw);flex:none;z-index:60;transform:translateX(-105%);transition:transform .3s cubic-bezier(.22,1,.36,1);border-right:0}
+  body.menu-open .side{transform:none;box-shadow:0 20px 60px rgba(0,0,0,.45)}
+  .scrim{display:block;position:fixed;inset:0;background:rgba(10,12,18,.5);z-index:55;opacity:0;pointer-events:none;transition:opacity .25s}
+  body.menu-open .scrim{opacity:1;pointer-events:auto}
+  .main{padding:18px 16px 44px;-webkit-overflow-scrolling:touch}
+  h1{font-size:21px}
+  .sub{margin-bottom:14px}
+  .card{padding:14px}
+  .grid2,.two,.dash-top,.hero{grid-template-columns:1fr}
+  .kpis,.kpis-4{grid-template-columns:1fr 1fr}
+  .kpi .val{font-size:22px}
+  .wk-strip{flex-wrap:nowrap;overflow-x:auto;padding-bottom:6px;margin-left:-16px;margin-right:-16px;padding-left:16px;padding-right:16px;scrollbar-width:none}
+  .wk-strip::-webkit-scrollbar{display:none}
+  .wk{flex:0 0 auto}
+  .ts-top{flex-wrap:wrap;gap:8px}
+  .ts-week{font-size:13px}
+  .ts-foot{flex-direction:column;align-items:stretch;gap:12px}
+  .ts-foot>span{margin-left:0!important;flex-wrap:wrap}
+  .ts-foot>span>.muted{display:none}
+  .ts-foot .btn{flex:1 1 auto}
+  .timer-bar{flex-wrap:wrap}.timer-bar>.muted{display:none}
+  .card:has(>table){overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .card>table{min-width:560px}
+  .toolbar{gap:6px}
+  .toolbar input,.toolbar select{min-width:0}
+  .btn{padding:10px 14px}
+  .btn.sm{padding:8px 12px}
+  .modal-bg{align-items:flex-end}
+  .modal{width:100%;max-width:100%;border-radius:16px 16px 0 0;max-height:92dvh;overflow:auto}
+  #login{padding:14px;align-items:flex-start;padding-top:6vh;overflow:auto}
+  .lcard,.lcard.setup{width:100%;max-width:100%}
+  .lcard .in,.lcard.setup .in{padding:26px 22px 24px}
+  input,select,textarea{font-size:16px}
+  .card>table.tst{min-width:0}
+  .tst th:nth-child(1),.tst th:nth-child(3),.tst tr:not(.dayrow) td:nth-child(1),.tst tr:not(.dayrow) td:nth-child(3){display:none}
+  .tst td{padding:9px 8px;font-size:13px}
+  .tst .day-actions{float:none;margin-left:8px}
+}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style></head>
 <body class="{{LOGOCLS}}">
@@ -4949,6 +4996,9 @@ input,select,textarea{transition:border-color .15s ease,box-shadow .15s ease}
 </div></div></div>
 
 <div id="app" class="hidden">
+  <div class="topbar"><button class="burger" onclick="toggleMenu()" aria-label="Menu"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
+    <span class="tb-brand brand-co">Timesheets</span></div>
+  <div class="scrim" onclick="toggleMenu(false)"></div>
   <div class="side">
     <div class="top"><img class="brand-logo" src="{{LOGO}}" alt="">
       <div class="brand brand-fallback brand-co" style="font-size:20px">Timesheets</div>
@@ -5156,8 +5206,9 @@ function buildNav(){
 function setActive(v){[...document.querySelectorAll('.nav a')].forEach(a=>a.classList.toggle('active',a.dataset.v===v));}
 function head(t,sub){return `<h1>${esc(t)}</h1><div class="h-accent"></div>`+(sub?`<div class="sub">${esc(sub)}</div>`:'');}
 
+function toggleMenu(on){ document.body.classList.toggle('menu-open', on===undefined?undefined:!!on); }
 async function nav(v){
-  setActive(v);
+  setActive(v); toggleMenu(false);
   const m=E('main'); m.classList.remove('enter'); m.classList.add('leaving');
   try{ await _navInner(v,m); }
   finally{ m.classList.remove('leaving'); void m.offsetWidth; m.classList.add('enter'); m.scrollTop=0; setTimeout(countUp,30); clearTimeout(window._enterT); window._enterT=setTimeout(()=>m.classList.remove('enter'),800); }
@@ -5510,7 +5561,7 @@ function drawTimesheet(){
       <span id="timerDisp" class="timer-disp">${running?fmtHMS(Date.now()-window._timerStart):'00:00:00'}</span>
       ${running?`<button class="btn sm" onclick="timerStopAdd()">Stop &amp; add line</button> <button class="btn sm ghost" onclick="timerReset()">Reset</button>`:`<button class="btn sm" onclick="timerStart()">Start timer</button>`}
       <span class="muted" style="font-size:12px;margin-left:auto">Times what you're on now &middot; rounds to nearest 15 min</span></div>`;}
-  h+='<div class="card" style="padding:6px 8px"><table><thead><tr><th>Day</th><th>Job Ref</th><th>Role</th><th>Narrative</th><th class="tnum">Hours</th><th>Rate</th></tr></thead><tbody>';
+  h+='<div class="card" style="padding:6px 8px"><table class="tst"><thead><tr><th>Day</th><th>Job Ref</th><th>Role</th><th>Narrative</th><th class="tnum">Hours</th><th>Rate</th></tr></thead><tbody>';
   d.days.forEach((day,i)=>{
     const dl=d.lines.filter(l=>l.work_date===day); const tot=dl.reduce((a,b)=>a+b.hours,0);
     const wflag=(tot>(window._dailyWarn||24))?' <span style="color:#d23a3a">(!)</span>':'';
@@ -5524,7 +5575,7 @@ function drawTimesheet(){
       h+=`<tr class="${d.editable?'lrow':''}${_tsSel.has(idx)?' sel':''}" data-idx="${idx}"
         ${d.editable?`onclick="selLine(event,${idx},'${day}')" ondblclick="editLine(${idx})" oncontextmenu="lineMenu(event,${idx},'${day}')"`:''}>
         <td></td><td>${esc(l.job_ref)}</td><td>${esc(l.job_role)}</td><td>${narr}</td>
-        <td class="tnum">${l.hours}</td><td>${l.rate==='Normal'?'':esc(l.rate)} ${d.editable?`<button class="xdel" title="Delete" onclick="event.stopPropagation();delLine(${idx})">✕</button>`:''}</td></tr>`; });
+        <td class="tnum">${l.hours}</td><td class="nowrap">${l.rate==='Normal'?'':esc(l.rate)} ${d.editable?`<button class="xedit" title="Edit" onclick="event.stopPropagation();editLine(${idx})">✎</button><button class="xdel" title="Delete" onclick="event.stopPropagation();delLine(${idx})">✕</button>`:''}</td></tr>`; });
   });
   h+='</tbody></table></div>';
   h+=`<div class="ts-foot"><span class="muted">Week total: <b>${d.worked} h</b>${d.paid!==d.worked?` &nbsp;(paid ${d.paid} h)`:''}</span>`;
@@ -6998,7 +7049,7 @@ async function adminEdit(tid){
 function aeCtx(){return {days:AE.days,day_labels:AE.day_labels,defaultRole:AE.owner_role};}
 function aeDraw(){
   const d=AE; let h=head('Edit hours – '+esc(d.name), d.week+'  ·  status '+d.status);
-  h+='<div class="card" style="padding:6px 8px"><table><thead><tr><th>Day</th><th>Job Ref</th><th>Role</th><th>Narrative</th><th class="tnum">Hours</th><th>Rate</th></tr></thead><tbody>';
+  h+='<div class="card" style="padding:6px 8px"><table class="tst"><thead><tr><th>Day</th><th>Job Ref</th><th>Role</th><th>Narrative</th><th class="tnum">Hours</th><th>Rate</th></tr></thead><tbody>';
   d.days.forEach((day,i)=>{const dl=d.lines.filter(l=>l.work_date===day);const tot=dl.reduce((a,b)=>a+b.hours,0);
     h+=`<tr class="dayrow"><td colspan="6"><b>${esc(d.day_labels[i])}</b>${tot?` <span class="muted">(${tot}h)</span>`:''}</td></tr>`;
     dl.forEach(l=>{const idx=d.lines.indexOf(l);
