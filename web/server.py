@@ -394,7 +394,7 @@ def build_index_html():
   <div class="s-hint" style="text-align:center;margin-top:14px"><a href="#" onclick="showSignup();return false;">New here? Create your company</a></div>
 </div></div></div>''')
     # sign-up flow talks to /api/signup and lands straight in the app
-    rep('''async function doSetup(){''', '''function showSignup(){ E('login').classList.add('hidden'); E('setup').classList.remove('hidden'); setTimeout(()=>{const c=E('su_co');if(c)c.focus();},50); }
+    rep('''async function doSetup(){''', '''function showSignup(){ E('login').classList.add('hidden'); E('setup').classList.remove('hidden'); setTimeout(()=>{const c=E('su_co');if(c&&(!document.activeElement||document.activeElement===document.body))c.focus();},50); }
 function showLogin(){ E('setup').classList.add('hidden'); E('login').classList.remove('hidden'); }
 async function doSetup(){
   const btn=E('sbtn'); if(btn.dataset.busy==='1')return;
