@@ -6,3 +6,4 @@ pdfminer.six==20240706
 pypdf==5.1.0
 pillow==11.0.0
 pytesseract==0.3.13
+python-multipart==0.0.20

@@ -145,9 +145,9 @@ def _sign(payload: bytes) -> str:
     return base64.urlsafe_b64encode(payload).decode() + "." + base64.urlsafe_b64encode(sig).decode()
 
 
-def make_session(cid, uid, days):
+def make_session(cid, uid, days, email=""):
     exp = int(time.time()) + int(days * 86400)
-    return _sign(json.dumps({"cid": int(cid), "uid": int(uid), "exp": exp}).encode())
+    return _sign(json.dumps({"cid": int(cid), "uid": int(uid), "em": (email or "").lower(), "exp": exp}).encode())
 
 
 def read_session(token):
@@ -344,6 +344,30 @@ BRIDGE_JS = r"""<script>
 })();
 </script>"""
 
+IMPORT_JS = r"""function _pickRaw(accept){ return new Promise(res=>{ const i=document.createElement('input'); i.type='file'; i.accept=accept; i.style.display='none'; document.body.appendChild(i); i.onchange=()=>{const f=i.files&&i.files[0]||null; i.remove(); res(f);}; i.click(); }); }
+async function _importUpload(url,file,msg){
+  const m=E('imp_msg'); m.textContent=msg; const fd=new FormData(); fd.append('file',file,file.name);
+  let r; try{ r=await fetch(url,{method:'POST',body:fd,credentials:'same-origin'}); }catch(e){ m.textContent='Upload failed: '+e.message; return null; }
+  let j=null; try{ j=await r.json(); }catch(e){}
+  if(!r.ok||!j||!j.ok){ m.textContent='Import failed: '+((j&&j.error)||('server error '+r.status)); return null; }
+  return j;
+}
+async function importDb(){
+  const f=await _pickRaw('.db,.sqlite,.sqlite3'); if(!f)return;
+  if(!confirm('Replace EVERYTHING in this company with the contents of '+f.name+'?\n\nPeople, timesheets, jobs, invoices, bills and expenses currently here will be replaced. A copy is kept on the server.'))return;
+  const j=await _importUpload('/api/import_database',f,'Uploading and checking the database…'); if(!j)return;
+  E('imp_msg').textContent=`Imported: ${j.users} people, ${j.timesheets} timesheets, ${j.jobs} jobs, ${j.expenses} expenses.`;
+  alert('Database imported.\n\n'+j.users+' people, '+j.timesheets+' timesheets, '+j.jobs+' jobs.\n\nYou will now be signed out. Sign back in with your old desktop login, then upload the Receipts zip from Settings (step 2).');
+  USER=null; location.reload();
+}
+async function importReceipts(){
+  const f=await _pickRaw('.zip'); if(!f)return;
+  const j=await _importUpload('/api/import_receipts',f,'Uploading documents ('+Math.round(f.size/1048576)+' MB)…'); if(!j)return;
+  E('imp_msg').textContent=`Documents imported: ${j.files} files. ${j.relinked} attachment links updated.`;
+}
+"""
+
+
 def build_index_html():
     html = ts.INDEX_HTML.replace("{{LOGO}}", "").replace("{{LOGOCLS}}", "")
 
@@ -391,7 +415,14 @@ async function _desktopSetup(){''')
         '''  <div class="card" style="margin-top:16px"><div style="font-weight:700;margin-bottom:6px">Your data</div>
     <div class="muted" style="font-size:13px;line-height:1.5">Stored online in your company's own private database, backed up daily.</div>
     <div class="muted" style="font-size:11.5px;margin-top:12px">${esc(window._brand?window._brand.app:'Timesheets')} ${esc(s.version)}</div></div>
+  <div class="card" style="margin-top:16px"><div style="font-weight:700;margin-bottom:6px">Import from the desktop version</div>
+    <div class="muted" style="font-size:13px;line-height:1.5">Moving from the old desktop app? Upload its <b>timesheets.db</b> file and everything comes across: people (with their passwords), timesheets, jobs, rates, invoices, bills, expenses and the audit trail. Then upload the <b>Receipts</b> folder as a zip so attached documents open here too.</div>
+    <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap"><button class="btn sm" onclick="importDb()">1. Upload timesheets.db…</button><button class="btn sm ghost" onclick="importReceipts()">2. Upload Receipts.zip…</button></div>
+    <div class="muted" style="font-size:12px;margin-top:10px;line-height:1.5"><b>This replaces everything currently in this company</b> — do it on a fresh company before anyone starts using it. A copy of the current data is kept on the server. Afterwards you sign in with your old desktop login.</div>
+    <div id="imp_msg" class="muted" style="font-size:13px;margin-top:8px"></div></div>
   <div class="hidden"><div style="font-weight:700;margin-bottom:6px">Data</div>''')
+    rep('''async function saveSettings(){''', IMPORT_JS + '''
+async function saveSettings(){''')
     rep('''    <div class="k">Open maximised</div>''', '''    <div class="k hidden">Open maximised</div>''')
     rep('''<label style="font-size:13px"><input type="checkbox" id="st_max"''', '''<label class="hidden" style="font-size:13px"><input type="checkbox" id="st_max"''')
     rep('<meta charset="utf-8">',
@@ -422,6 +453,8 @@ def current(request: Request):
         return None
     if not row or not row["active"]:
         return None
+    if (row["email"] or "").lower() != s.get("em", ""):
+        return None          # account replaced (e.g. after an import): session no longer valid
     return s["cid"], _public_user(row)
 
 
@@ -478,7 +511,7 @@ async def signup(request: Request):
     sync_directory(cid)
     u = _public_user(db.get_user_by_email(email))
     resp = JSONResponse({"result": {"ok": True, "user": u}})
-    set_cookie(resp, make_session(cid, u["id"], 30), 30)
+    set_cookie(resp, make_session(cid, u["id"], 30, u["email"]), 30)
     return resp
 
 
@@ -491,7 +524,7 @@ async def login(request: Request):
         return {"result": None}
     cid, u = found
     resp = JSONResponse({"result": u})
-    set_cookie(resp, make_session(cid, u["id"], 1), 1)   # 'remember' extends it below
+    set_cookie(resp, make_session(cid, u["id"], 1, u["email"]), 1)   # 'remember' extends it below
     return resp
 
 
@@ -503,7 +536,7 @@ async def remember_login(request: Request):
     body = await request.json()
     remember = bool((body.get("args") or [False])[0])
     resp = JSONResponse({"result": {"ok": True}})
-    set_cookie(resp, make_session(cur[0], cur[1]["id"], 30 if remember else 1), 30 if remember else 1)
+    set_cookie(resp, make_session(cur[0], cur[1]["id"], 30 if remember else 1, cur[1]["email"]), 30 if remember else 1)
     return resp
 
 
@@ -532,6 +565,157 @@ async def brand(request: Request):
     cur = current(request)
     api = WebApi(cur[0], cur[1]) if cur else WebApi()
     return {"result": api.brand()}
+
+
+# ---------------------------------------------------------------------------
+# Import from the desktop app: its SQLite file + a zip of its Receipts folder
+# ---------------------------------------------------------------------------
+from fastapi import UploadFile, File  # noqa: E402
+
+_ATTACH_COLS = [("expenses", "receipt"), ("expenses", "payment_receipt"), ("job_refs", "quote_attachment"),
+                ("job_variations", "attachment"), ("job_invoices", "attachment"),
+                ("job_bills", "attachment"), ("job_documents", "attachment")]
+
+
+def _relink_attachments(cid):
+    """Attachment columns hold absolute paths from the old PC (e.g.
+    Z:\\Timesheets\\Receipts\\J123\\bill.pdf). Point them at this company's
+    Receipts folder, keeping the part after 'Receipts'."""
+    rec = os.path.join(company_dir(cid), "Receipts")
+    os.makedirs(rec, exist_ok=True)
+    rec_norm = rec.replace("\\", "/")
+    n = 0
+    db = company_db(cid)
+    with db.conn() as con:
+        for table, col in _ATTACH_COLS:
+            try:
+                rows = con.execute(f"SELECT id, {col} AS p FROM {table} WHERE {col}<>''").fetchall()
+            except Exception:
+                continue
+            for r in rows:
+                p = str(r["p"]).replace("\\", "/")
+                if p.startswith(rec_norm):
+                    continue
+                idx = p.lower().rfind("/receipts/")
+                tail = p[idx + len("/receipts/"):] if idx >= 0 else p.rsplit("/", 1)[-1]
+                newp = os.path.join(rec, *[t for t in tail.split("/") if t])
+                con.execute(f"UPDATE {table} SET {col}=? WHERE id=?", (newp, r["id"]))
+                n += 1
+    return n
+
+
+async def _save_upload(up, dest, limit):
+    size = 0
+    with open(dest, "wb") as f:
+        while True:
+            chunk = await up.read(1024 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > limit:
+                f.close()
+                os.remove(dest)
+                return None
+            f.write(chunk)
+    return size
+
+
+@app.post("/api/import_database")
+async def import_database(request: Request, file: UploadFile = File(...)):
+    cur = current(request)
+    if not cur:
+        return JSONResponse({"error": "Not signed in"}, status_code=401)
+    cid, user = cur
+    if user["user_type"] != "Admin":
+        return JSONResponse({"ok": False, "error": "Admins only"}, status_code=403)
+    cdir = company_dir(cid)
+    tmp = os.path.join(cdir, "import_upload.db")
+    if await _save_upload(file, tmp, 512 * 1024 * 1024) is None:
+        return {"ok": False, "error": "That file is over 512 MB."}
+    try:
+        with open(tmp, "rb") as f:
+            if f.read(16) != b"SQLite format 3\x00":
+                raise ValueError("That is not a SQLite database file. Pick timesheets.db from the desktop app's folder.")
+        con = sqlite3.connect(tmp)
+        names = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        con.close()
+        for need in ("users", "timesheets", "timesheet_lines", "job_refs"):
+            if need not in names:
+                raise ValueError("That database is missing the '%s' table - it isn't a Timesheets database." % need)
+    except Exception as e:
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+        return {"ok": False, "error": str(e)}
+    live = os.path.join(cdir, "timesheets.db")
+    bk = os.path.join(cdir, "backups")
+    os.makedirs(bk, exist_ok=True)
+    try:
+        if os.path.exists(live):
+            shutil.copy2(live, os.path.join(bk, f"pre-import_{dt.datetime.now():%Y%m%d_%H%M%S}.db"))
+        with _DBS_LOCK:
+            _DBS.pop(cid, None)
+        shutil.move(tmp, live)
+        db = company_db(cid)                     # init_schema + seed_defaults = migrations
+        relinked = _relink_attachments(cid)
+        sync_directory(cid)
+        with db.conn() as con:
+            counts = {t: con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                      for t in ("users", "timesheets", "job_refs", "expenses")}
+        db.audit(user["email"], "IMPORT_DATABASE", "", f"{file.filename} {counts}")
+    except Exception as e:
+        return {"ok": False, "error": "Import failed: " + str(e)}
+    resp = JSONResponse({"ok": True, "users": counts["users"], "timesheets": counts["timesheets"],
+                         "jobs": counts["job_refs"], "expenses": counts["expenses"], "relinked": relinked})
+    clear_cookie(resp)        # the importing account no longer exists in this database
+    return resp
+
+
+@app.post("/api/import_receipts")
+async def import_receipts(request: Request, file: UploadFile = File(...)):
+    import zipfile
+    cur = current(request)
+    if not cur:
+        return JSONResponse({"error": "Not signed in"}, status_code=401)
+    cid, user = cur
+    if user["user_type"] != "Admin":
+        return JSONResponse({"ok": False, "error": "Admins only"}, status_code=403)
+    cdir = company_dir(cid)
+    tmp = os.path.join(cdir, "import_receipts.zip")
+    if await _save_upload(file, tmp, 2 * 1024 * 1024 * 1024) is None:
+        return {"ok": False, "error": "That zip is over 2 GB."}
+    rec = os.path.abspath(os.path.join(cdir, "Receipts"))
+    os.makedirs(rec, exist_ok=True)
+    n = 0
+    try:
+        with zipfile.ZipFile(tmp) as z:
+            for info in z.infolist():
+                if info.is_dir():
+                    continue
+                parts = info.filename.replace("\\", "/").split("/")
+                if parts and parts[0].lower() == "receipts":
+                    parts = parts[1:]
+                parts = [p for p in parts if p not in ("", ".", "..")]
+                if not parts:
+                    continue
+                dest = os.path.abspath(os.path.join(rec, *parts))
+                if not dest.startswith(rec + os.sep):
+                    continue
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                with z.open(info) as src, open(dest, "wb") as out:
+                    shutil.copyfileobj(src, out)
+                n += 1
+    except zipfile.BadZipFile:
+        return {"ok": False, "error": "That isn't a zip file. Right-click the Receipts folder > Send to > Compressed (zipped) folder."}
+    finally:
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+    relinked = _relink_attachments(cid)
+    company_db(cid).audit(user["email"], "IMPORT_RECEIPTS", "", f"{file.filename} ({n} files)")
+    return {"ok": True, "files": n, "relinked": relinked}
 
 
 @app.post("/api/{method}")
