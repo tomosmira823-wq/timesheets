@@ -2838,6 +2838,9 @@ class Api:
         out = {"user": u, "week": _fmt_week(wk), "status": ts["status"],
                "first_name": (u["full_name"] or "").split(" ")[0],
                "my_week": my_hours(wk, wk_end), "my_month": my_hours(m_start, m_end),
+               "my_days": [round(dayh.get((wk + dt.timedelta(days=i)).isoformat(), 0.0), 2) for i in range(7)],
+               "today_idx": (today - wk).days, "today_label": today.strftime("%A %d %B"),
+               "week_label": f"{wk.strftime('%d %b')} – {wk_end.strftime('%d %b')}",
                "target": float(self.cfg.get("weekly_target_hours", 37.5)),
                "prev": prev[:14], "weeks": weeks,
                "is_mgr": u["user_type"] in ("Manager", "Admin"),
@@ -4807,6 +4810,31 @@ tr.jobrow.dragover td{background:#f1f9ea;box-shadow:inset 0 0 0 1px var(--green)
 .drp-foot{display:flex;align-items:center;gap:10px;margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
 .drp-sel{font-size:13px;color:#2b3040;font-weight:600}
 
+/* ---------- dashboard ---------- */
+.dash-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:18px}
+.dash-actions{display:flex;gap:8px;flex-wrap:wrap}
+.dash-actions .cnt{display:inline-block;min-width:18px;padding:0 5px;border-radius:9px;background:var(--amber);color:#fff;font-size:11px;line-height:18px;text-align:center;margin-left:4px}
+.dash-top{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:14px;margin-bottom:18px}
+@media(max-width:1100px){.dash-top{grid-template-columns:1fr}}
+.hero{display:grid;grid-template-columns:auto 1fr auto;gap:22px;align-items:center;padding:20px 22px;border-left:4px solid var(--green)}
+.hero.warn{border-left-color:var(--amber)}.hero.bad{border-left-color:var(--red)}
+.hero-l{display:flex;align-items:center;gap:16px}
+.hero .lab{font-size:11px;color:var(--mut);font-weight:700;text-transform:uppercase;letter-spacing:.1em}
+.hero .val{font-size:30px;font-weight:800;letter-spacing:-.02em;line-height:1.1;margin-top:4px;font-variant-numeric:tabular-nums}
+.hero-s{display:flex;align-items:center;gap:10px;margin-top:8px;font-size:12.5px}
+.hero-days{display:flex;gap:8px;align-items:flex-end;height:64px}
+.dcol{display:flex;flex-direction:column;align-items:center;gap:4px;width:22px}
+.dcol .dbar{width:14px;height:44px;background:#eceef2;border-radius:4px;display:flex;align-items:flex-end;overflow:hidden}
+.dcol .dbar i{display:block;width:100%;background:#c9e9b7;border-radius:4px;transform-origin:bottom;animation:growy .6s cubic-bezier(.22,1,.36,1) both}
+.dcol.has .dbar i{background:var(--green)}
+.dcol span{font-size:10px;font-weight:700;color:var(--mut-2)}
+.dcol.today span{color:var(--ink)}
+.dcol.today .dbar{box-shadow:0 0 0 2px var(--green-soft)}
+.hero-cta{align-self:center}.hero-cta .btn{white-space:nowrap}
+.att-col{display:flex;flex-direction:column;gap:10px}
+.att-col .att{animation:fadeUp .4s cubic-bezier(.22,1,.36,1) both}
+.att-col .att:nth-child(2){animation-delay:.06s}.att-col .att:nth-child(3){animation-delay:.12s}
+@media(max-width:900px){.hero{grid-template-columns:1fr;gap:14px}.hero-days{height:56px}}
 /* ---------- analytics ---------- */
 .an-top{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:0 0 18px}
 .seg{display:inline-flex;background:#fff;border:1px solid var(--line);border-radius:10px;padding:3px;gap:2px}
@@ -5215,68 +5243,50 @@ function attCard(cls,icon,big,lab,go,act){
 function renderDash(d){
   const hr=new Date().getHours();
   const greet=hr<12?'Good morning':(hr<18?'Good afternoon':'Good evening');
-  let h=`<h1>${greet}, ${esc(d.first_name||'')}</h1><div class="hb"></div>`;
+  let h=`<div class="dash-head"><div><h1>${greet}, ${esc(d.first_name||'')}</h1><div class="sub" style="margin:0">${esc(d.today_label||'')} · week of ${esc(d.week_label||'')}</div></div>
+    <div class="dash-actions"><button class="btn sm" onclick="nav('timesheet')">My timesheet</button>${d.is_mgr?`<button class="btn sm ghost" onclick="nav('approvals')">Approvals${d.awaiting?` <span class="cnt">${d.awaiting}</span>`:''}</button>`:''}<button class="btn sm ghost" onclick="nav('expenses')">Expenses</button></div></div>`;
 
-  // ---- things that actually need doing (only shown when true) ----
+  // ---- my week hero + attention ----
+  const target=Number(d.target)||37.5, mine=Number(d.my_week)||0, pct=Math.min(1,mine/target);
+  const days=(d.my_days||[0,0,0,0,0,0,0]); const dmax=Math.max(8,...days); const dn=['M','T','W','T','F','S','S'];
+  const tone=d.status==='Approved'?'ok':d.status==='Rejected'?'bad':(mine>=target?'ok':(pct>=0.5?'warn':'bad'));
   const cards=[];
-  if(d.rejected)
-    cards.push(attCard('bad','alert','Timesheet rejected',
-      esc(d.reject_reason||'Your manager sent this week back to you.'),'Put it right',"nav('timesheet')"));
-  if(['None','Draft','Rejected'].includes(d.last_week_status))
-    cards.push(attCard('bad','clock','Last week',
-      `(w/c ${esc(d.last_week_label)}) still isn't submitted`,'Submit it',"nav('timesheet')"));
-  else if(d.status==='Draft'){
-    const pct=d.target?Math.round(d.my_week/d.target*100):0;
-    cards.push(attCard(d.my_week>=d.target?'ok':'warn','clock','This week',
-      `${d.my_week} of ${d.target} hours logged${pct?` (${pct}%)`:''}`,'Open my timesheet',"nav('timesheet')"));
-  }
-  if(d.is_mgr&&d.awaiting)
-    cards.push(attCard(d.awaiting_oldest_days>10?'bad':'warn','inbox',
-      d.awaiting+' timesheet'+(d.awaiting===1?'':'s'),
-      'waiting for your approval'+(d.awaiting_oldest_days>10?', oldest is '+d.awaiting_oldest_days+' days old':''),
-      'Go to Approvals',"nav('approvals')"));
-  if(d.is_mgr&&d.missing){
-    // Keep to one short line. Listing every name made this card three times
-    // taller than the ones beside it and threw the whole row out.
-    const shown=(d.missing_names||[]).slice(0,2).map(esc).join(', ');
-    const rest=d.missing-Math.min(2,(d.missing_names||[]).length);
-    cards.push(attCard('warn','people',d.missing+' '+(d.missing===1?'person':'people'),
-      "haven't submitted last week"+(shown?' — '+shown+(rest>0?' +'+rest+' more':''):''),
-      'See who',"nav('reports')"));
-  }
-  if(cards.length) h+='<div class="sec-h">NEEDS YOUR ATTENTION</div><div class="att-grid" id="attgrid">'+cards.join('')+'</div>';
-  else h+=`<div class="att-grid"><div class="att ok" style="cursor:default">
-      <div class="att-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${ATT_SVG.tick}</svg></div>
-      <div><div class="att-big">All clear</div><div class="att-lab">Nothing needs your attention right now.</div></div></div></div>`;
+  if(d.rejected) cards.push(attCard('bad','alert','Timesheet rejected', esc(d.reject_reason||'Your manager sent this week back to you.'),'Put it right',"nav('timesheet')"));
+  if(['None','Draft','Rejected'].includes(d.last_week_status)) cards.push(attCard('bad','clock','Last week', `(w/c ${esc(d.last_week_label)}) still isn't submitted`,'Submit it',"nav('timesheet')"));
+  if(d.is_mgr&&d.awaiting) cards.push(attCard(d.awaiting_oldest_days>10?'bad':'warn','inbox', d.awaiting+' timesheet'+(d.awaiting===1?'':'s'), 'waiting for your approval'+(d.awaiting_oldest_days>10?', oldest is '+d.awaiting_oldest_days+' days old':''), 'Go to Approvals',"nav('approvals')"));
+  if(d.is_mgr&&d.missing){ const shown=(d.missing_names||[]).slice(0,2).map(esc).join(', '); const rest=d.missing-Math.min(2,(d.missing_names||[]).length);
+    cards.push(attCard('warn','people',d.missing+' '+(d.missing===1?'person':'people'), "haven't submitted last week"+(shown?' — '+shown+(rest>0?' +'+rest+' more':''):''), 'See who',"nav('reports')")); }
+  h+=`<div class="dash-top"><div class="card hero ${tone}">
+      <div class="hero-l">${ring(pct,tone==='bad'&&d.status!=='Rejected'&&pct<0.5?'bad':tone)}<div><div class="lab">This week</div><div class="val">${mine}<span class="muted" style="font-size:15px;font-weight:600"> / ${target}h</span></div><div class="hero-s">${badge(d.status||'Draft')}${d.status==='Draft'?`<span class="muted">${mine>=target?'Ready to submit':((target-mine).toFixed(1)+'h to go')}</span>`:''}</div></div></div>
+      <div class="hero-days">${days.map((v,i)=>`<div class="dcol ${i===d.today_idx?'today':''} ${v?'has':''}" title="${v}h"><div class="dbar"><i style="height:${Math.round(v/dmax*100)}%"></i></div><span>${dn[i]}</span></div>`).join('')}</div>
+      <div class="hero-cta"><button class="btn sm" onclick="nav('timesheet')">${d.status==='Draft'?(mine?'Continue timesheet':'Start this week'):'Open timesheet'}</button></div>
+    </div>
+    <div class="att-col">${cards.length?cards.join(''):`<div class="att ok" style="cursor:default"><div class="att-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${ATT_SVG.tick}</svg></div><div><div class="att-big">All clear</div><div class="att-lab">Nothing needs your attention right now.</div></div></div>`}</div></div>`;
 
-  // ---- money (Admin only) ----
-  if(d.is_admin&&d.money){
-    const m=d.money;
-    h+='<div class="sec-h">MONEY</div><div class="grid kpis kpis-4" style="margin-bottom:20px">'
-      +kpi('Invoiced this month',money0(m.invoiced_month))
-      +kpi('Left to invoice',money0(m.to_invoice),1)
-      +kpi('Invoiced, unpaid',money0(m.invoiced_unpaid))
-      +kpi('Bills unpaid',money0(m.bills_unpaid))+'</div>';
+  // ---- money (Admin) ----
+  if(d.is_admin&&d.money){ const m=d.money;
+    h+='<div class="sec-h">Money</div><div class="grid kpis kpis-4" style="margin-bottom:16px">'
+      +kpi('Invoiced this month',money0(m.invoiced_month))+kpi('Left to invoice',money0(m.to_invoice),1)
+      +kpi('Invoiced, unpaid',money0(m.invoiced_unpaid))+kpi('Bills unpaid',money0(m.bills_unpaid))+'</div>'; }
+
+  // ---- company pulse (managers) ----
+  if(d.is_mgr){
+    h+='<div class="sec-h">Company this week</div><div class="grid kpis" style="margin-bottom:16px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">'+
+      kpi('Hours this week',d.co_week)+kpi('Hours this month',d.co_month)+kpi('Active staff',d.active_staff)+kpi('Awaiting approval',d.awaiting)+'</div>';
   }
-  h+='<div id="riskcard"></div><div id="folderwrap"></div>';
+  h+='<div id="riskcard"></div>';
 
   // ---- charts ----
   h+='<div class="two">';
   h+=`<div class="card"><div class="sec-t">My hours – last 8 weeks</div>${barChart(d.weeks,d.target)}</div>`;
-  if(d.is_mgr && d.by_role && d.by_role.length)
-    h+=`<div class="card"><div class="sec-t">Company hours by role (this month)</div>${donut(d.by_role)}</div>`;
-  else
-    h+=`<div class="card"><div class="sec-t">Recent submissions</div>${miniSubs(d.prev)}</div>`;
+  if(d.is_mgr && d.by_role && d.by_role.length) h+=`<div class="card"><div class="sec-t">Company hours by role (this month)</div>${donut(d.by_role)}</div>`;
+  else h+=`<div class="card"><div class="sec-t">Recent submissions</div>${miniSubs(d.prev)}</div>`;
   h+='</div>';
 
-  if(d.is_mgr){
-    h+='<div class="sec-h" style="margin-top:22px">COMPANY</div><div class="grid kpis">'+
-      kpi('Hours this week',d.co_week)+kpi('Hours this month',d.co_month)+
-      kpi('Active staff',d.active_staff)+kpi('Awaiting approval',d.awaiting)+'</div>';
-  }
-  h+=`<div class="sec-h" style="margin-top:22px">MY PREVIOUS TIMESHEETS</div><div class="card" style="padding:6px 8px"><table><thead><tr><th>Week starting</th><th>Status</th><th class="tnum">Total hours</th></tr></thead><tbody>`;
-  if(!d.prev.length)h+='<tr><td colspan="3" class="muted">Nothing yet.</td></tr>';
-  d.prev.forEach(p=>h+=`<tr><td>${esc(p.week)}</td><td>${badge(p.status)}</td><td class="tnum">${p.hours}</td></tr>`);
+  h+='<div id="folderwrap"></div>';
+  h+=`<div class="sec-h" style="margin-top:22px">My previous timesheets</div><div class="card" style="padding:6px 8px"><table><thead><tr><th>Week starting</th><th>Status</th><th class="tnum">Total hours</th><th></th></tr></thead><tbody>`;
+  if(!d.prev.length)h+='<tr><td colspan="4" class="muted">Nothing yet.</td></tr>';
+  d.prev.slice(0,8).forEach(p=>h+=`<tr><td>${esc(p.week)}</td><td>${badge(p.status)}</td><td class="tnum">${p.hours}</td><td style="text-align:right"><button class="btn xs ghost" onclick="nav('submissions')">View</button></td></tr>`);
   h+='</tbody></table></div>';
   E('main').innerHTML=h;
   if(d.is_mgr){loadRisk(); loadFolders();}   // both fetched after the page is up
