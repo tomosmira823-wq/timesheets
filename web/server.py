@@ -222,7 +222,7 @@ MANAGER_ONLY = {"approvals", "approve", "approval_lines", "save_admin_lines", "j
                 "analytics", "job_timeline", "job_timeline_detail", "timeline_lines", "job_billing",
                 "job_documents", "document_folders", "dash_jobs_at_risk", "export_invoice_template",
                 "import_invoices", "scan_document", "ocr_status"}
-ADMIN_ONLY = {"audit", "users", "jobs", "roles", "add_user", "update_user", "reset_password",
+ADMIN_ONLY = {"bug_reports","set_bug_status","audit", "users", "jobs", "roles", "add_user", "update_user", "reset_password",
               "delete_user", "add_job", "update_job", "delete_job", "add_role", "toggle_role",
               "tidy_documents", "get_settings", "save_settings", "set_logo", "remove_logo",
               "save_goals", "add_variation", "update_variation", "delete_variation", "add_invoice",
@@ -252,6 +252,21 @@ class WebApi(ts.Api):
                 "app": ts.APP_NAME, "version": ts.APP_VERSION,
                 "logo": self.logo() if self.cid else "", "needs_setup": False,
                 "online": True}
+
+    def report_bug(self, details, steps="", page="", device="", errors=""):
+        r = super().report_bug(details, steps, page, device, errors)
+        if r.get("ok"):
+            # Also keep one log across every company so the product owner sees them all.
+            try:
+                rec = {"time": dt.datetime.now().isoformat(timespec="seconds"), "company_id": self.cid,
+                       "company": (self.cfg.get("company_name") or self.db.get_meta("company_name") or ""),
+                       "id": r["id"], "user": self.user.get("email"), "page": page,
+                       "details": details, "steps": steps, "device": device, "errors": errors}
+                with open(os.path.join(DATA_ROOT, "bug_reports.jsonl"), "a", encoding="utf-8") as f:
+                    f.write(json.dumps(rec) + "\n")
+            except Exception:
+                pass
+        return r
 
     def app_config(self):
         self._need()

@@ -181,6 +181,19 @@ class DB:
         with self.conn() as con:
             con.executescript(
                 """
+                CREATE TABLE IF NOT EXISTS bug_reports (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created    TEXT NOT NULL,
+                    user_id    INTEGER,
+                    user_name  TEXT NOT NULL DEFAULT '',
+                    user_email TEXT NOT NULL DEFAULT '',
+                    page       TEXT NOT NULL DEFAULT '',
+                    details    TEXT NOT NULL DEFAULT '',
+                    steps      TEXT NOT NULL DEFAULT '',
+                    device     TEXT NOT NULL DEFAULT '',
+                    errors     TEXT NOT NULL DEFAULT '',
+                    status     TEXT NOT NULL DEFAULT 'Open'
+                );
                 CREATE TABLE IF NOT EXISTS app_meta (
                     key   TEXT PRIMARY KEY,
                     value TEXT NOT NULL DEFAULT ''
@@ -3193,6 +3206,36 @@ class Api:
                 "users": [{"id": u["id"], "name": u["full_name"]}
                           for u in self.db.list_users()]}
 
+    # ---- bug reports ----
+    def report_bug(self, details, steps="", page="", device="", errors=""):
+        u = self._need()
+        details = (details or "").strip()
+        if not details:
+            return {"ok": False, "error": "Tell us what went wrong."}
+        row = (dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), u["id"], u["full_name"], u["email"],
+               str(page or "")[:80], details[:4000], str(steps or "").strip()[:4000],
+               str(device or "")[:300], str(errors or "")[:4000])
+        with self.db.conn() as con:
+            cur = con.execute("INSERT INTO bug_reports (created,user_id,user_name,user_email,page,details,steps,device,errors)"
+                              " VALUES (?,?,?,?,?,?,?,?,?)", row)
+            bid = cur.lastrowid
+        self.db.audit(u["email"], "BUG REPORTED", "", f"#{bid}: {details[:120]}")
+        return {"ok": True, "id": bid}
+
+    def bug_reports(self):
+        self._admin()
+        with self.db.conn() as con:
+            rows = con.execute("SELECT * FROM bug_reports ORDER BY (status='Open') DESC, id DESC").fetchall()
+        return [dict(r) for r in rows]
+
+    def set_bug_status(self, bug_id, status):
+        u = self._admin()
+        status = "Fixed" if status == "Fixed" else "Open"
+        with self.db.conn() as con:
+            con.execute("UPDATE bug_reports SET status=? WHERE id=?", (status, int(bug_id)))
+        self.db.audit(u["email"], "BUG STATUS", "", f"#{int(bug_id)} -> {status}")
+        return {"ok": True}
+
     def _admin(self):
         u = self._need()
         if u["user_type"] != "Admin":
@@ -4653,8 +4696,8 @@ tr.jobrow.dragover td{background:#f1f9ea;box-shadow:inset 0 0 0 1px var(--green)
 .pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:700;letter-spacing:.04em}.pill-adj{background:var(--green-soft);color:#2e6a16}.pill-sub{background:var(--blue-soft);color:#24559e}
 .muted{color:var(--mut)}
 .toolbar{display:flex;gap:8px;margin:16px 0 0;align-items:center;flex-wrap:wrap}
-.toolbar select,.rep-grid select,.rep-grid input,.modal-b select,.modal-b textarea,.modal-b input{padding:9px 11px;border:1px solid var(--line);border-radius:var(--r-sm);font-size:13.5px;outline:none;background:#fff}
-.toolbar select:focus,.rep-grid select:focus,.rep-grid input:focus,.modal-b select:focus,.modal-b textarea:focus,.modal-b input:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(108,192,74,.18)}
+.bugcard select,.bugcard textarea,.toolbar select,.rep-grid select,.rep-grid input,.modal-b select,.modal-b textarea,.modal-b input{padding:9px 11px;border:1px solid var(--line);border-radius:var(--r-sm);font-size:13.5px;outline:none;background:#fff}
+.bugcard select:focus,.bugcard textarea:focus,.toolbar select:focus,.rep-grid select:focus,.rep-grid input:focus,.modal-b select:focus,.modal-b textarea:focus,.modal-b input:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(108,192,74,.18)}
 .rep-grid{display:grid;grid-template-columns:150px 1fr;gap:10px 14px;align-items:center;max-width:600px}
 .bar-wrap{background:#eceef2;border-radius:999px;height:8px;overflow:hidden;width:120px;display:inline-block;vertical-align:middle}
 .bar-fill{height:100%;background:var(--green)}
@@ -5198,7 +5241,9 @@ const NAV=[
   ['roles','Job Roles',['Admin']],
   ['audit','Audit Trail',['Admin']],
   ['settings','Settings',['Admin']],
+  ['bugreports','Bug Reports',['Admin']],
   ['changepw','Change Password',['Standard','Manager','Admin']],
+  ['bug','Report a Bug',['Standard','Manager','Admin']],
 ];
 const NAV_ICON={
   dashboard:'<rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/>',
@@ -5217,9 +5262,11 @@ const NAV_ICON={
   roles:'<rect x="4" y="7" width="16" height="13" rx="2"/><path d="M9 7V5a3 3 0 0 1 6 0v2"/>',
   audit:'<path d="M5 3h10l4 4v14H5z"/><path d="M9 12h6M9 16h6M9 8h2"/>',
   settings:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
+  bug:'<path d="M8 6a4 4 0 0 1 8 0"/><rect x="7" y="6" width="10" height="13" rx="5"/><path d="M12 10v9M3 13h4M17 13h4M4 7l3 2M20 7l-3 2M4 19l3-2M20 19l-3-2"/>',
+  bugreports:'<path d="M8 6a4 4 0 0 1 8 0"/><rect x="7" y="6" width="10" height="13" rx="5"/><path d="M12 10v9M3 13h4M17 13h4"/>',
   changepw:'<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>'
 };
-const NAV_GROUPS=[['',['dashboard','timesheet','submissions','expenses']],['Team',['approvals','allts','import','reports','analytics','timeline','jobcosts']],['Admin',['users','jobs','roles','audit','settings']],['Account',['changepw']]];
+const NAV_GROUPS=[['',['dashboard','timesheet','submissions','expenses']],['Team',['approvals','allts','import','reports','analytics','timeline','jobcosts']],['Admin',['users','jobs','roles','audit','bugreports','settings']],['Account',['changepw','bug']]];
 function buildNav(){
   const allowed=NAV.filter(n=>n[2].includes(USER.user_type));
   let h='';
@@ -5252,6 +5299,7 @@ function cardify(root){
 })();
 function toggleMenu(on){ document.body.classList.toggle('menu-open', on===undefined?undefined:!!on); }
 async function nav(v){
+  if(v!=='bug') window._lastPage=v;
   setActive(v); toggleMenu(false);
   const m=E('main'); m.classList.remove('enter'); m.classList.add('leaving');
   try{ await _navInner(v,m); }
@@ -5287,6 +5335,8 @@ async function _navInner(v,m){
     if(v==='analytics') return renderAnalytics();
     if(v==='timeline') return renderTimeline();
     if(v==='changepw') return changePw();
+    if(v==='bug') return renderBug();
+    if(v==='bugreports') return renderBugReports();
     if(v==='settings') return renderSettings();
     if(v==='audit') return renderTable(m,'Audit Trail','', await API.audit(),
         [['time','When',fmtTs],['user','Who',nowrap],['action','Action',nowrap],['old','Before'],['new','After']]);
@@ -6870,6 +6920,58 @@ async function moveData(){
   if(r.needs_login){ await API.logout(); USER=null; E('app').classList.add('hidden'); E('login').classList.remove('hidden'); E('lp').value=''; await applyBrand(); E('lerr').textContent='Now using the shared database. Sign in with an account that exists there.'; return; }
   toast('Data folder changed'); renderSettings();
 }
+// ===== bug reports =====
+window._errLog=window._errLog||[];
+function _logErr(m){ try{ window._errLog.push(new Date().toTimeString().slice(0,8)+' '+String(m).slice(0,300)); if(window._errLog.length>10) window._errLog.shift(); }catch(e){} }
+window.addEventListener('error',e=>_logErr(e.message||'error'));
+window.addEventListener('unhandledrejection',e=>_logErr((e.reason&&(e.reason.message||e.reason))||'rejected'));
+function _pageName(v){ const n=NAV.find(x=>x[0]===v); return n?n[1]:(v||''); }
+function renderBug(){
+  const from=_pageName(window._lastPage||'dashboard');
+  E('main').innerHTML=head('Report a Bug','Something not working, or looks wrong? Tell us and we\'ll fix it.')+
+  `<div class="card bugcard" style="max-width:620px">
+    <label class="muted s-lab">Which screen?</label>
+    <select id="bg_page" style="width:100%">${NAV.filter(n=>n[0]!=='bug'&&n[2].includes(USER.user_type)).map(n=>`<option ${n[1]===from?'selected':''}>${esc(n[1])}</option>`).join('')}<option>Signing in</option><option>Something else</option></select>
+    <label class="muted s-lab" style="margin-top:14px">What went wrong?</label>
+    <textarea id="bg_det" rows="4" style="width:100%;font:inherit" placeholder="e.g. I pressed Submit and nothing happened"></textarea>
+    <label class="muted s-lab" style="margin-top:14px">What were you doing just before? <span style="font-weight:400">(optional)</span></label>
+    <textarea id="bg_steps" rows="3" style="width:100%;font:inherit" placeholder="e.g. Added two lines for Monday, then pressed Submit"></textarea>
+    <div class="muted" style="font-size:12px;margin-top:10px;line-height:1.5">We'll also include your name, the time, and your device/browser so we can reproduce it.</div>
+    <div class="err" id="bg_err"></div>
+    <button class="btn" style="margin-top:14px" id="bg_btn" onclick="sendBug()">Send report</button>
+  </div>`;
+}
+async function sendBug(){
+  const btn=E('bg_btn'); if(btn.dataset.busy)return; E('bg_err').textContent='';
+  const det=E('bg_det').value.trim(); if(!det){E('bg_err').textContent='Tell us what went wrong.';E('bg_det').focus();return;}
+  btn.dataset.busy='1'; btn.textContent='Sending…';
+  const dev=navigator.userAgent+' · '+screen.width+'×'+screen.height+((window.matchMedia&&matchMedia('(display-mode: standalone)').matches)?' · installed app':'');
+  let r; try{ r=await API.report_bug(det,E('bg_steps').value,E('bg_page').value,dev,(window._errLog||[]).join('\n')); }catch(e){ r={ok:false,error:String(e&&e.message||e)}; }
+  btn.dataset.busy=''; btn.textContent='Send report';
+  if(!r||!r.ok){E('bg_err').textContent=(r&&r.error)||'Could not send — please try again.';return;}
+  E('main').innerHTML=head('Report a Bug')+`<div class="card" style="max-width:620px;text-align:center;padding:34px 22px">
+    <div style="width:56px;height:56px;border-radius:50%;background:var(--green-soft);color:var(--green-d);display:flex;align-items:center;justify-content:center;margin:0 auto 14px;font-size:26px;font-weight:800">✓</div>
+    <div style="font-weight:800;font-size:18px;margin-bottom:6px">Thanks — report #${r.id} sent</div>
+    <div class="muted" style="font-size:13.5px">We'll look into it. You can carry on working.</div>
+    <div style="display:flex;gap:8px;justify-content:center;margin-top:18px;flex-wrap:wrap"><button class="btn sm" onclick="nav(window._lastPage||'dashboard')">Back to ${esc(_pageName(window._lastPage||'dashboard'))}</button><button class="btn sm ghost" onclick="renderBug()">Report another</button></div></div>`;
+}
+let _bugShow='Open';
+async function renderBugReports(){
+  const all=await API.bug_reports(); const open=all.filter(b=>b.status==='Open').length;
+  const rows=_bugShow==='All'?all:all.filter(b=>b.status===_bugShow);
+  let h=head('Bug Reports','What your team has reported. Mark each one fixed once it\'s sorted.')+
+   `<div class="toolbar" style="margin:0 0 14px"><span class="muted">Show:</span><select onchange="_bugShow=this.value;renderBugReports()">${['Open','Fixed','All'].map(s=>`<option ${s===_bugShow?'selected':''}>${s}</option>`).join('')}</select><span class="muted" style="margin-left:auto">${open} open</span></div>`;
+  if(!rows.length) h+=`<div class="card"><div class="muted">${_bugShow==='Open'?'No open bug reports. 🎉':'Nothing here.'}</div></div>`;
+  rows.forEach(b=>{ h+=`<div class="card" style="margin-bottom:12px;border-left:4px solid ${b.status==='Open'?'#d9922e':'var(--green)'}">
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px"><b>#${b.id}</b>${person(b.user_name)}<span class="muted" style="font-size:12.5px">${fmtTs(b.created)} · ${esc(b.page)}</span>
+      <span style="margin-left:auto;font-size:12px;font-weight:700;padding:3px 10px;border-radius:999px;background:${b.status==='Open'?'#fdf1de;color:#9a5b0c':'var(--green-soft);color:var(--green-d)'}">${b.status}</span></div>
+    <div style="white-space:pre-wrap;font-size:14px;line-height:1.5">${esc(b.details)}</div>
+    ${b.steps?`<div class="muted" style="white-space:pre-wrap;font-size:13px;margin-top:8px"><b>Before that:</b> ${esc(b.steps)}</div>`:''}
+    <details style="margin-top:8px"><summary class="muted" style="font-size:12px;cursor:pointer">Technical details</summary><div class="muted" style="font-size:11.5px;white-space:pre-wrap;word-break:break-word;margin-top:6px">${esc(b.user_email)}\n${esc(b.device)}${b.errors?'\n\nRecent errors:\n'+esc(b.errors):''}</div></details>
+    <div style="margin-top:10px"><button class="btn xs ${b.status==='Open'?'':'ghost'}" onclick="bugStatus(${b.id},'${b.status==='Open'?'Fixed':'Open'}')">${b.status==='Open'?'Mark fixed':'Reopen'}</button></div></div>`; });
+  E('main').innerHTML=h;
+}
+async function bugStatus(id,st){ await API.set_bug_status(id,st); renderBugReports(); }
 function changePw(){E('main').innerHTML=head('Change Password')+'<div class="card" style="max-width:420px"><label class="muted" style="font-size:13px">New password</label><input id="cp_pw" type="password" style="width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:9px;margin-top:6px"><div style="margin-top:14px"><button class="btn sm" onclick="doChangePw()">Update password</button></div></div>';}
 async function doChangePw(){const p=E('cp_pw').value;if(!p){alert('Enter a new password.');return;}await API.change_my_password(p);alert('Your password has been changed.');E('cp_pw').value='';}
 
