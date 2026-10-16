@@ -437,14 +437,24 @@ async function importReceipts(){
 
 
 INSTALL_JS = r"""<style>
-.inst{position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom));z-index:70;background:#15151c;color:#fff;border-radius:16px;padding:14px 14px 14px 16px;box-shadow:0 18px 50px rgba(0,0,0,.35);display:flex;gap:12px;align-items:center;animation:instUp .45s cubic-bezier(.22,1,.36,1) both;font-size:13.5px;line-height:1.4}
-@keyframes instUp{from{transform:translateY(130%);opacity:0}to{transform:none;opacity:1}}
-.inst img{width:44px;height:44px;border-radius:11px;flex:0 0 44px;background:#fff}
-.inst .t{flex:1;min-width:0}.inst b{display:block;font-size:14.5px;margin-bottom:2px}
-.inst .s{color:#aab1be;font-size:12.5px}
-.inst .go{background:var(--green,#6cc04a);color:#0e1a08;border:0;border-radius:10px;padding:10px 14px;font-weight:800;font-size:14px;cursor:pointer}
-.inst .x{background:none;border:0;color:#7d8494;font-size:20px;padding:0 4px;cursor:pointer;align-self:flex-start}
-.inst svg{vertical-align:-3px}
+.inst{position:fixed;inset:0;z-index:90;background:#0f1117;color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:calc(28px + env(safe-area-inset-top)) 26px calc(22px + env(safe-area-inset-bottom));animation:instIn .35s ease both;overflow:auto;background-image:radial-gradient(ellipse at 50% 0%,rgba(108,192,74,.22) 0,transparent 60%)}
+@keyframes instIn{from{opacity:0}to{opacity:1}}
+.inst .ic{width:96px;height:96px;border-radius:24px;background:#fff;box-shadow:0 14px 40px rgba(0,0,0,.5);margin-bottom:22px;animation:instPop .6s .1s cubic-bezier(.34,1.4,.64,1) both}
+@keyframes instPop{from{transform:scale(.6);opacity:0}to{transform:none;opacity:1}}
+.inst h2{font-size:26px;font-weight:800;letter-spacing:-.02em;margin:0 0 8px;line-height:1.15}
+.inst .lead{color:#aab1be;font-size:15px;line-height:1.5;margin:0 0 26px;max-width:320px}
+.inst ol{list-style:none;padding:0;margin:0 0 26px;width:100%;max-width:340px;text-align:left;counter-reset:st}
+.inst li{display:flex;align-items:center;gap:14px;background:#1a1d26;border:1px solid #262b36;border-radius:14px;padding:14px 16px;margin-bottom:10px;font-size:15px;line-height:1.35;counter-increment:st;animation:instUp .45s cubic-bezier(.22,1,.36,1) both}
+.inst li:nth-child(2){animation-delay:.08s}.inst li:nth-child(3){animation-delay:.16s}
+@keyframes instUp{from{transform:translateY(14px);opacity:0}to{transform:none;opacity:1}}
+.inst li::before{content:counter(st);flex:0 0 30px;height:30px;border-radius:50%;background:#6cc04a;color:#0e1a08;font-weight:800;display:flex;align-items:center;justify-content:center;font-size:14px}
+.inst li b{color:#fff}
+.inst .chip{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:8px;background:#2a2f3a;vertical-align:middle;margin:0 2px}
+.inst .go{width:100%;max-width:340px;background:#6cc04a;color:#0e1a08;border:0;border-radius:14px;padding:17px;font-weight:800;font-size:17px;cursor:pointer;margin-bottom:10px}
+.inst .later{background:none;border:0;color:#7d8494;font-size:14px;padding:12px;cursor:pointer;margin-top:auto}
+.inst .arrow{position:fixed;left:50%;bottom:calc(10px + env(safe-area-inset-bottom));transform:translateX(-50%);color:#6cc04a;animation:instBob 1.4s ease-in-out infinite}
+@keyframes instBob{0%,100%{transform:translate(-50%,0)}50%{transform:translate(-50%,8px)}}
+.inst .spacer{flex:1 1 auto;min-height:10px}
 </style><script>
 (function(){
   var ua=navigator.userAgent||'';
@@ -461,19 +471,29 @@ INSTALL_JS = r"""<style>
     try{if(localStorage.getItem('ts_client'))return;}catch(e){}
     setTimeout(function(){
       var b=document.createElement('div');b.className='inst';b.id='inst';
-      var share='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 8l5-5 5 5"/><path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/></svg>';
-      var body=isIOS
-        ? '<div class="t"><b>Add Timesheets to your Home Screen</b><span class="s">Tap '+share+' Share (under <b style="display:inline">⋯</b> in Safari), then <b style="display:inline">Add to Home Screen</b>. It opens like an app.</span></div>'
-        : '<div class="t"><b>Install the Timesheets app</b><span class="s">One tap — it goes on your home screen and opens full screen.</span></div><button class="go" id="instGo">Install</button>';
-      b.innerHTML='<img src="/icon.png" alt="">'+body+'<button class="x" aria-label="Not now" id="instX">×</button>';
-      document.body.appendChild(b);
+      var share='<span class="chip"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 8l5-5 5 5"/><path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/></svg></span>';
+      var plus='<span class="chip"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="4"/><path d="M12 8v8M8 12h8"/></svg></span>';
+      var html='<div class="spacer"></div><img class="ic" src="/icon.png" alt="">';
+      if(isIOS){
+        html+='<h2>Add Timesheets to your Home Screen</h2><p class="lead">It opens full screen like a normal app, and you stay signed in.</p>'
+          +'<ol><li><span>Tap '+share+' <b>Share</b> at the bottom of Safari <span style="color:#7d8494">(or under ⋯)</span></span></li>'
+          +'<li><span>Scroll down and tap '+plus+' <b>Add to Home Screen</b></span></li>'
+          +'<li><span>Tap <b>Add</b> — then open Timesheets from your home screen</span></li></ol>'
+          +'<div class="spacer"></div><button class="later" id="instX">Not now</button>'
+          +'<svg class="arrow" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M6 13l6 6 6-6"/></svg>';
+      }else{
+        html+='<h2>Install the Timesheets app</h2><p class="lead">One tap. It goes on your home screen, opens full screen, and you stay signed in.</p>'
+          +'<button class="go" id="instGo">Install app</button><p class="lead" id="instHelp" style="display:none"></p>'
+          +'<div class="spacer"></div><button class="later" id="instX">Not now</button>';
+      }
+      b.innerHTML=html; document.body.appendChild(b);
       document.getElementById('instX').onclick=function(){try{localStorage.setItem('ts_inst_x',Date.now());}catch(e){} b.remove();};
       var go=document.getElementById('instGo');
       if(go)go.onclick=async function(){
         if(deferred){deferred.prompt();try{var r=await deferred.userChoice;if(r&&r.outcome==='accepted')b.remove();}catch(e){} deferred=null;}
-        else{b.querySelector('.s').innerHTML='Open the browser menu <b style="display:inline">⋮</b> and choose <b style="display:inline">Install app</b> or <b style="display:inline">Add to Home screen</b>.';go.remove();}
+        else{var h=document.getElementById('instHelp');h.style.display='block';h.innerHTML='Tap the browser menu <b style="color:#fff">⋮</b> (top right), then <b style="color:#fff">Install app</b> or <b style="color:#fff">Add to Home screen</b>.';go.style.display='none';}
       };
-    },1200);
+    },900);
   };
 })();
 </script>"""
