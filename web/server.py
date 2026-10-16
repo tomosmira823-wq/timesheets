@@ -446,7 +446,7 @@ async function importDb(){
 async function importReceipts(){
   const f=await _pickRaw('.zip'); if(!f)return;
   const j=await _importUpload('/api/import_receipts',f,'Uploading documents ('+Math.round(f.size/1048576)+' MB)…'); if(!j)return;
-  E('imp_msg').textContent=`Documents imported: ${j.files} files. ${j.relinked} attachment links updated.`;
+  const rl=j.relinked||{}; E('imp_msg').textContent=`Documents imported: ${j.files} files. ${rl.found||0} of ${rl.total||0} attachments now open`+(rl.missing?` — ${rl.missing} weren't in the zip (their file names are still listed, they just won't open).`:'.');
 }
 """
 
@@ -759,13 +759,35 @@ _ATTACH_COLS = [("expenses", "receipt"), ("expenses", "payment_receipt"), ("job_
 
 
 def _relink_attachments(cid):
-    """Attachment columns hold absolute paths from the old PC (e.g.
-    Z:\\Timesheets\\Receipts\\J123\\bill.pdf). Point them at this company's
-    Receipts folder, keeping the part after 'Receipts'."""
+    """Attachment columns hold absolute paths from the old PC, laid out however
+    that company kept its files (Z:\\Timesheets\\Receipts\\..., Documents\\Job\\...,
+    a network share...). Point each one at the uploaded copy in this company's
+    Receipts folder by finding the file with the same name; when several files
+    share a name, the one whose parent folders match the old path best wins.
+    Links already pointing at an existing file are left alone. Returns counts."""
     rec = os.path.join(company_dir(cid), "Receipts")
     os.makedirs(rec, exist_ok=True)
-    rec_norm = rec.replace("\\", "/")
-    n = 0
+    index = {}
+    for root, _dirs, files in os.walk(rec):
+        for fn in files:
+            index.setdefault(fn.lower(), []).append(os.path.join(root, fn))
+
+    def best(old):
+        parts = [x.lower() for x in str(old).replace("\\", "/").split("/") if x]
+        if not parts:
+            return None
+        cands = index.get(parts[-1], [])
+        if not cands:
+            return None
+        def score(c):
+            cp = [x.lower() for x in os.path.relpath(c, rec).replace("\\", "/").split("/")]
+            n = 0
+            while n < min(len(cp), len(parts)) and cp[-1 - n] == parts[-1 - n]:
+                n += 1
+            return n
+        return max(cands, key=score)
+
+    stats = {"linked": 0, "found": 0, "missing": 0, "total": 0}
     db = company_db(cid)
     with db.conn() as con:
         for table, col in _ATTACH_COLS:
@@ -774,15 +796,19 @@ def _relink_attachments(cid):
             except Exception:
                 continue
             for r in rows:
-                p = str(r["p"]).replace("\\", "/")
-                if p.startswith(rec_norm):
+                stats["total"] += 1
+                p = str(r["p"])
+                if os.path.isfile(p) and os.path.abspath(p).startswith(os.path.abspath(rec) + os.sep):
+                    stats["found"] += 1
                     continue
-                idx = p.lower().rfind("/receipts/")
-                tail = p[idx + len("/receipts/"):] if idx >= 0 else p.rsplit("/", 1)[-1]
-                newp = os.path.join(rec, *[t for t in tail.split("/") if t])
-                con.execute(f"UPDATE {table} SET {col}=? WHERE id=?", (newp, r["id"]))
-                n += 1
-    return n
+                hit = best(p)
+                if hit:
+                    con.execute(f"UPDATE {table} SET {col}=? WHERE id=?", (hit, r["id"]))
+                    stats["linked"] += 1
+                    stats["found"] += 1
+                else:
+                    stats["missing"] += 1
+    return stats
 
 
 async def _save_upload(up, dest, limit):
